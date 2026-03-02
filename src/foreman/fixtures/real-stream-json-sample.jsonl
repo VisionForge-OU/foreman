@@ -1,0 +1,5 @@
+{"type":"system","subtype":"init","cwd":"/home/arash/foreman","session_id":"a08d6bab-c6f4-4293-a8fd-a5d689f75f92","tools":["Task","Bash","Edit","Read","Write"],"model":"claude-haiku-4-5-20251001","permissionMode":"default","slash_commands":["foreman-tdd"],"skills":["foreman-tdd"],"output_style":"default"}
+{"type":"system","subtype":"thinking_tokens","estimated_tokens":92,"estimated_tokens_delta":53}
+{"type":"assistant","message":{"model":"claude-haiku-4-5-20251001","content":[{"type":"text","text":"PONG"}],"usage":{"input_tokens":10,"cache_creation_input_tokens":8026,"cache_read_input_tokens":16584,"output_tokens":7}}}
+{"type":"rate_limit_event","rate_limit_info":{"status":"allowed"}}
+{"type":"result","subtype":"success","is_error":false,"duration_ms":2358,"num_turns":1,"result":"PONG","stop_reason":"end_turn","total_cost_usd":0.0179604,"terminal_reason":"completed","usage":{"input_tokens":10,"output_tokens":48}}

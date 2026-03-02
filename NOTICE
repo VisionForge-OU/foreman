@@ -1,0 +1,36 @@
+Foreman
+=======
+
+This product includes software derived from mattpocock/skills
+(https://github.com/mattpocock/skills), Copyright (c) 2026 Matt Pocock,
+licensed under the MIT License.
+
+Upstream source: https://github.com/mattpocock/skills
+Forked from commit: 694fa30311e02c2639942308513555e61ee84a6f (cloned 2026-06-12)
+
+The following Foreman skills are derivative works of upstream skills. They have
+been renamed into a `foreman-*` namespace and substantially rewritten so that
+Foreman's pipeline never resolves to a user-installed upstream copy, and so the
+skills operate in a headless, non-interactive orchestration context.
+
+  foreman-grill-docs   <- grill-with-docs (+ to-prd)   [src/foreman/skills/foreman-grill-docs/]
+  foreman-to-prd       <- to-prd                        [src/foreman/skills/foreman-to-prd/]
+  foreman-to-issues    <- to-issues                     [src/foreman/skills/foreman-to-issues/]
+  foreman-tdd          <- tdd                           [src/foreman/skills/foreman-tdd/]
+
+A detailed, skill-by-skill description of what changed and why is recorded in
+DECISIONS.md, section 8.
+
+Summary of modifications:
+  - Removed all live, one-question-at-a-time interactive interviewing; replaced
+    with codebase self-answering plus a structured "Open questions for reviewer"
+    draft section consumed by Foreman's asynchronous review gate.
+  - Removed all GitHub (`gh`) issue-tracker usage and GitHub label/triage
+    vocabulary; issues are emitted as local files under .foreman/.
+  - Made the TDD skill stack-agnostic (test/lint/typecheck commands injected
+    from config.yaml) and added a machine-readable FOREMAN-SUMMARY output block.
+  - Repointed all document output paths to the .foreman/features/<slug>/ layout
+    while still maintaining the target repo's CONTEXT.md and docs/adr/.
+
+The MIT License text governing both the original and these derivative works is
+reproduced in the LICENSE file at the root of this repository.

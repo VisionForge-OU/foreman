@@ -1,0 +1,47 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "foreman-orchestrator"
+version = "0.1.0"
+description = "A Boris-style agentic orchestrator TUI that supervises headless Claude Code agents through a gated plan→ADR/PRD→issues→TDD→e2e delivery pipeline."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Foreman" }]
+keywords = ["claude", "claude-code", "tui", "agents", "orchestrator", "textual", "tdd"]
+classifiers = [
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Software Development :: Build Tools",
+]
+dependencies = [
+    "textual>=0.79",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "textual-dev>=1.5",
+]
+
+[project.scripts]
+foreman = "foreman.cli:main"
+
+[tool.hatch.build.targets.wheel]
+# Ships the package including the vendored skills (.md) and fixtures data files.
+packages = ["src/foreman"]
+artifacts = ["src/foreman/skills/**", "src/foreman/fixtures/**"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.hatch.metadata]
+allow-direct-references = true

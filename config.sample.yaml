@@ -1,0 +1,52 @@
+# Foreman per-target-repo configuration.
+# Copied to .foreman/config.yaml by `foreman init`. Edit to match your project.
+
+# Model used for the high-reasoning gated phases (plan, grill/ADR/PRD, slicing).
+model_planner: claude-fable-5
+# Model used for autonomous build workers. May be set to a cheaper model.
+model_worker: claude-fable-5
+# Reasoning effort for agents. One of: low, medium, high, xhigh, max.
+effort: high
+
+# Vendored skills that MUST be installed for the pipeline to run.
+# Foreman refuses to start a pipeline if any of these are missing.
+required_skills:
+  - foreman-grill-docs
+  - foreman-to-prd
+  - foreman-to-issues
+  - foreman-tdd
+
+# Commands Foreman runs ITSELF to verify a worker's claim (never trusts the agent).
+# Set any to null/empty to skip that check. cwd is the issue worktree.
+commands:
+  test: "npm test"
+  lint: "npm run lint"
+  typecheck: "npm run typecheck"
+  e2e: "npx playwright test"
+
+git:
+  integration_branch: main
+  merge_strategy: merge     # merge | squash | rebase
+  open_pr: false
+
+limits:
+  max_parallel: 2           # concurrent autonomous workers
+  max_retries: 3            # per-issue retry ceiling before escalation
+  daily_cost_usd: 50        # global hard stop
+
+# Default per-run budgets applied to new issues (issues may override in frontmatter).
+run_budget:
+  max_turns: 80
+  max_cost_usd: 5.00
+  timeout_min: 45
+
+# Stuck detection: escalate if a worker makes no file changes and no test
+# progress across this many consecutive turns.
+stuck_turns: 12
+
+e2e_enabled: true
+
+# Permission mode passed to every headless `claude` invocation.
+# One of: acceptEdits, auto, default, dontAsk, plan, bypassPermissions.
+# Never silently bypass all permissions.
+permission_mode: acceptEdits
