@@ -22,14 +22,24 @@ class DocStatus(str, Enum):
 
 
 class IssueStatus(str, Enum):
-    """Lifecycle of an implementation issue — §5."""
+    """Lifecycle of an implementation issue — §5, extended for Phase 2 (P2.3 WS2)."""
 
     QUEUED = "queued"
     IN_PROGRESS = "in_progress"
     TESTS_FAILING = "tests_failing"
+    AWAITING_EVALUATION = "awaiting_evaluation"  # passed Foreman's gate; evaluator pending
     NEEDS_HUMAN = "needs_human"
     DONE = "done"
     MERGED = "merged"
+
+
+# Schema version of the on-disk ``.foreman/`` tree. Phase-1 trees carry no marker
+# and are treated as v1; ``FileStore`` migrates them additively to v2 (P2.2).
+SCHEMA_VERSION = 2
+
+# Issue kinds (P2.3 WS4): ordinary feature work vs. janitor passes.
+ISSUE_KIND_FEATURE = "feature"
+ISSUE_KIND_JANITOR = "janitor"
 
 
 class Phase(str, Enum):
@@ -128,7 +138,13 @@ class GatedDoc:
 
 @dataclass
 class Issue:
-    """An implementation issue (§5)."""
+    """An implementation issue (§5, extended for Phase 2 — P2.2).
+
+    Phase-2 fields: ``acceptance_check`` (path to a runnable check or a command —
+    required for new issues to enter the queue, WS1.1), ``touches`` (declared file
+    footprint for conflict-aware scheduling, WS4.1), and ``kind`` (feature|janitor,
+    WS4.3). All default empty so Phase-1 issue files still load.
+    """
 
     id: str
     title: str
@@ -139,6 +155,18 @@ class Issue:
     budget: Budget = field(default_factory=Budget)
     prd_refs: list[str] = field(default_factory=list)
     body: str = ""
+    acceptance_check: str = ""
+    touches: list[str] = field(default_factory=list)
+    kind: str = ISSUE_KIND_FEATURE
+
+    @property
+    def is_janitor(self) -> bool:
+        return self.kind == ISSUE_KIND_JANITOR
+
+    @property
+    def footprint_known(self) -> bool:
+        """A declared, non-empty footprint. Unknown ⇒ conflicts-with-all (P2.2)."""
+        return bool(self.touches)
 
     def frontmatter(self) -> dict[str, Any]:
         return {
@@ -150,7 +178,43 @@ class Issue:
             "attempts": self.attempts,
             "budget": self.budget.to_dict(),
             "prd_refs": list(self.prd_refs),
+            "acceptance_check": self.acceptance_check,
+            "touches": list(self.touches),
+            "kind": self.kind,
         }
+
+
+@dataclass
+class IssueVerification:
+    """A single issue's entry in a feature's ``verification.json`` (P2.2, WS1.2).
+
+    The Default-FAIL contract: every issue starts ``passes=False``. Only Foreman
+    flips it — workers are blocked from writing this file by a worktree hook
+    (WS1.3). ``evidence`` lists artifact paths under ``runs/<id>/evidence/``.
+    """
+
+    passes: bool = False
+    evidence: list[str] = field(default_factory=list)
+    verified_at: Optional[str] = None
+    verified_by: Optional[str] = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "passes": self.passes,
+            "evidence": list(self.evidence),
+            "verified_at": self.verified_at,
+            "verified_by": self.verified_by,
+        }
+
+    @classmethod
+    def from_dict(cls, d: Optional[dict[str, Any]]) -> "IssueVerification":
+        d = d or {}
+        return cls(
+            passes=bool(d.get("passes", False)),
+            evidence=list(d.get("evidence", []) or []),
+            verified_at=d.get("verified_at"),
+            verified_by=d.get("verified_by"),
+        )
 
 
 @dataclass
@@ -179,6 +243,8 @@ class RunRecord:
     output_tokens: int = 0
     terminal_reason: str = ""   # completed | killed_turns | killed_cost | killed_timeout | error
     session_id: Optional[str] = None
+    prompt_tokens: int = 0      # WS3.4: assembled-prompt size (context-bloat visibility)
+    outcome: str = ""           # WS6: outcome taxonomy label
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -194,6 +260,8 @@ class FeatureState:
     docs: dict[str, GatedDoc] = field(default_factory=dict)
     issues: list[Issue] = field(default_factory=list)
     queue_confirmed: bool = False
+    # Foreman-owned structural "done" map, keyed by issue id (P2.2, WS1.2).
+    verification: dict[str, "IssueVerification"] = field(default_factory=dict)
 
     def doc(self, kind: str) -> Optional[GatedDoc]:
         return self.docs.get(kind)

@@ -1,0 +1,17 @@
+  [phase1] ISS-001-MERGED
+>>> ISS-001 merged — sending SIGKILL to the whole process group
+>>> after crash: issue statuses={'ISS-001': 'merged', 'ISS-002': 'in_progress'}
+>>> after crash: verification.passes={'ISS-001': True, 'ISS-002': False}
+>>> after crash: ISS-001 build run dirs=['s0003-ISS-001']
+>>> restarting build in a fresh process (disk-based recovery)…
+RESUME-STATUSES {'ISS-001': 'merged', 'ISS-002': 'in_progress'}
+RESUME-MERGED ['ISS-001']
+
+=== F11 FINDINGS ===
+crash SIGKILL delivered .................. True
+state-of-record recovered from disk ...... True (ISS-001 stayed 'merged')
+no duplicate merge / no rebuild of ISS-001  True (run dirs before=['s0003-ISS-001'] after=['s0003-ISS-001'])
+interrupted ISS-002 reconciled & finished  False (final status=in_progress)
+
+F11 ESSENTIALS (disk recovery, no dup merge): PASS
+F11 RECONCILE interrupted worker: FAIL

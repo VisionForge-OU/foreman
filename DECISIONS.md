@@ -158,3 +158,268 @@ one-key update, only ever overwriting Foreman's own `foreman-*` skills.
   surface a notice rather than failing.
 - Git identity: if the target repo has no user.name/email, Foreman commits with a local
   `-c user.name=Foreman -c user.email=foreman@localhost` override scoped to its own commits.
+
+---
+
+# PHASE 2 — "Trustworthy Autonomy"
+
+Phase 2 upgrades Foreman from *automated* to *trustworthy*: executable verification,
+builder/grader separation, disciplined context, correct parallelism, low-fatigue review,
+and a self-improvement flywheel. This part records the Phase-2 decisions, the empirical
+findings they rest on, and the schema-v2 migration. Phase-1 behaviour is preserved; every
+`.foreman/` tree from Phase 1 keeps working via the migration in §P2.2.
+
+## P2.0 Empirical verification of the mechanics Phase 2 depends on
+
+Re-verified against `claude` v2.1.174 on 2026-06-12 with **real headless runs** in throwaway
+scratch repos (each run cost ≈ $0.02 on `--model haiku --effort low`). Evidence, not docs.
+
+### Hooks (the WS1 evidence gate rests entirely on these)
+- **`PreToolUse` config shape** lives in `.claude/settings.json` under
+  `hooks.PreToolUse = [{ "matcher": "Write|Edit", "hooks": [{ "type": "command", "command": "<abs path>" }] }]`.
+  The matcher is a regex over the **tool name**. The hook command receives the event as JSON
+  on **stdin**: `{ "tool_name": "Write", "tool_input": { "file_path": "...", "content": "..." }, ... }`.
+- **A `permissionDecision: "deny"` blocks the tool even under a permissive permission mode.**
+  Verified: with `--permission-mode acceptEdits`, a hook emitting
+  `{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"…"}}`
+  on stdout caused the `Write` to `verification.json` to **never happen** (file absent on disk);
+  the reason text was fed back to the model as the tool result. This is the exact guarantee
+  WS1.3 needs and it holds under the mode workers actually run with (`acceptEdits`).
+- **Exit-code-2 also blocks**, with the hook's **stderr** delivered to the model as the tool
+  result (`PreToolUse:Bash hook error: …`). This is the mechanism the cwc-long-running-agents
+  hook scripts use; we use it for Bash-path gating where a path can't be read from a single
+  JSON field (e.g. a `bash -c 'echo … > verification.json'` write).
+- **Decision:** Foreman's worktree hooks emit the structured `permissionDecision: deny` JSON
+  for the Write/Edit case (clean, no stderr noise) and fall back to `exit 2 + stderr` for the
+  Bash case. Both are proven.
+
+### Subagents (the WS2 evaluator / WS5 auditor rest on these)
+- A `.claude/agents/<name>.md` file with YAML frontmatter (`name`, `description`,
+  `tools: Read, Grep, Glob`, `model: haiku`) is invoked headlessly with `claude -p --agent <name>`.
+- **The `tools:` allowlist is structurally enforced.** Verified: the `system/init` event for an
+  `--agent foreman-evaluator` run reported `tools=['Read','Grep','Glob']`; when asked to create
+  a file it had **no Write tool available** and produced nothing on disk. A read-only evaluator
+  therefore *cannot* mutate the tree — builder/grader separation is structural, not prompted.
+- The init event also exposes the available agent names (`agents=[...,'foreman-evaluator',...]`),
+  which Foreman asserts to confirm the agent was installed before trusting a verdict.
+- `--agent` selects the session agent; `--model`/`--effort` on the CLI still apply, so Foreman
+  can override the evaluator's model per-issue (cheap default, frontier for high-stakes).
+
+### Stop-time enforcement (WS3.2)
+- A headless `-p` run simply *ends*; a `Stop` hook cannot meaningfully "hold a worker open" the
+  way it can interactively. **Decision:** enforce the handoff contract **Foreman-side** (the
+  prompt permits "hook or Foreman-side"): after the run, Foreman checks `progress.md` was updated
+  and the worktree builds; a failure is treated as an incomplete attempt and bounced. This is
+  more robust than a Stop hook for headless runs and keeps the logic testable above the backend
+  seam. A `commit-on-stop`-style git backstop (cwc primitive) is still installed as a Stop hook
+  so a killed worker never loses work.
+
+### Settings precedence & coexistence
+- **`claude --settings <file>` loads and fires hooks — verified with a real run.** Rather than
+  writing into the worktree's tracked `.claude/settings.json` (which would show as a diff and risk
+  being committed), Foreman writes its hook scripts + a `settings.json` into a **sibling** dir
+  (`<worktree>.foreman-hooks/`) and passes `--settings <that>/settings.json`. Verified: a worker
+  given that `--settings` file was **blocked** from writing `verification.json` (file never
+  created, deny reason surfaced) — exactly as with an in-repo settings file, but with zero
+  worktree-diff pollution. The user's global/user settings still load (no `--strict-mcp-config`),
+  so their MCP servers and other skills remain available (R2); Foreman's hooks are additive.
+- The runner injects, via the subprocess env: `PATH` (prepended with the hooks dir so
+  `foreman-test` resolves), `FOREMAN_TEST_CMD` (the project's real test command the wrapper runs),
+  `FOREMAN_WORKER_ID` (seeds the `--fast` subsample), and `FOREMAN_TEST_LOG`.
+
+## P2.1 Architecture integration map (where each workstream lands)
+
+New modules (top-level under `src/foreman/`):
+- `verification/` — `checks.py` (acceptance-check model + runner), `evidence.py` (evidence-dir
+  contract + validation), `ratchet.py` (regression baseline + gate), `verification_json.py`
+  (the Foreman-owned `verification.json` writer — the ONLY writer).
+- `hooks/` — packaged hook-script assets + `installer.py` that writes them into a worktree's
+  `.claude/`. Assets: `deny_protected.sh` (deny worker writes to verification.json / issue
+  status), `commit_on_stop.sh` (git backstop). Plus the installed `foreman-test` wrapper.
+- `agents/` — packaged `foreman-evaluator.md` and `foreman-auditor.md` agent files +
+  `evaluator.py` / `auditor.py` spawn paths and verdict parsing.
+- `context/` — `assembler.py` (the one `ContextAssembler` with per-section token budgets),
+  `initializer.py` (one-time feature initializer), `distiller.py` (failure-distiller).
+- `retro/` — `metrics.py` (outcome taxonomy + aggregation), `retro.py` (`foreman retro`),
+  `bench.py` (`foreman bench`).
+
+Touched modules: `models.py` (new dataclasses + statuses + schema version), `state.py`
+(schema-v2 read/write + migration + `verification.json` + outcome labels), `config.py` (new
+config blocks), `scheduler.py` (conflict graph, locks, evaluator stage, janitor cadence,
+`awaiting_evaluation`), `runner.py` (assembled-prompt token logging), `skill_invocation.py`
+(ContextAssembler integration), `installer.py`/`vendored.py` (install hooks + agents +
+`foreman-test`; version markers), the vendored skills (`foreman-to-issues`, `foreman-tdd`,
+`foreman-grill-docs`), `cli.py` (`retro`/`bench`), `tui/` (review v2, metrics pane, conflict
+graph, verdicts, token meters, notify), `demo_scripts.py`/`demo.py` (new demo cases).
+
+## P2.2 State schema v2 + migration (the foundation everything builds on)
+
+- A new top-level marker file `.foreman/schema_version` holds an integer (Phase-1 trees have
+  none ⇒ treated as **v1**). `FileStore` reads it on open; a `migrate()` runs lazily and
+  idempotently when a v1 tree is loaded, then stamps `2`.
+- **v1→v2 migration is purely additive — it never rewrites or deletes Phase-1 files.** It:
+  (a) writes `schema_version=2`; (b) for each existing feature with issues, materialises a
+  `verification.json` seeded `{<id>: {passes:false, evidence:[], verified_at:null, verified_by:null}}`
+  for any issue lacking one (existing MERGED/DONE issues are recorded as `passes:true` with an
+  empty-evidence `verified_by:"migration"` note so the ratchet has a baseline). Issue
+  `kind`/`touches` are **not** written back to disk — they default **in memory** (`feature` /
+  empty footprint), so a missing footprint means "unknown" ⇒ the scheduler treats it as
+  conflicting-with-all until re-sliced (the safe default) while the v1 issue file stays
+  byte-for-byte untouched. Run `outcome` labels default to `legacy` in memory where absent.
+  Migration is covered by `tests/test_migration.py`, which builds a v1 tree (no marker, no
+  verification.json), asserts it is detected as v1, migrates on load, and verifies the Phase-1
+  issue files are unchanged byte-for-byte and still load with v2 defaults.
+- Issue frontmatter gains: `acceptance_check` (path/command — **required** for new issues),
+  `touches` (list), `kind` (`feature`|`janitor`). New `IssueStatus.AWAITING_EVALUATION`. The
+  enum is parsed tolerantly (unknown ⇒ kept as raw, never crashes) so a forward-rolled tree
+  opened by an older Foreman degrades gracefully.
+- `verification.json` lives at `.foreman/features/<slug>/verification.json`. **Invariant: only
+  `verification_json.py` (Foreman) writes it; workers are blocked by the worktree hook.** It is
+  NOT the issue file's `status` — status remains in the issue frontmatter, but the *truth of
+  "passes"* is the verification.json entry, which only Foreman flips after its own checks.
+
+## P2.3 Workstream designs (decisions, not just restatement)
+
+**WS1 — executable verification.** Acceptance checks are first-class: `verification/checks.py`
+defines `AcceptanceCheck{kind: test_file|command, ref}` stored under `issues/ISS-NNN.check/`.
+The slicer (`foreman-to-issues` v2) must emit one per issue derived from a PRD acceptance
+criterion; `state.write_issue` rejects an issue with no `acceptance_check` from entering the
+queue (queue-review surfaces the check next to the issue). `verify()` is extended so the gate is
+**acceptance-check pass AND full-suite ≥ baseline AND lint/typecheck clean**; the regression
+ratchet (`ratchet.py`) snapshots the set of passing test ids after each merge and a newly-failing
+test bounces the work *naming the regressed tests*. The completion contract: the worker saves
+evidence under `runs/<id>/evidence/`; `evidence.py` rejects a "complete" summary whose listed
+artifacts are missing/empty and Foreman counts it as a failed attempt. `foreman-test` is a small
+installed wrapper: ≤20-line console (counts + failures only), full log with one `ERROR`-prefixed
+greppable line per failure, pre-computed stats, and `--fast` = deterministic per-worker seeded
+subsample (seed = hash(worker id)); the full suite is still mandatory before completion. The
+wrapper prints elapsed wall-clock and the `foreman-tdd` prompt caps the share of turns spent
+re-running tests.
+
+**WS2 — evaluator.** `agents/foreman-evaluator.md` (`tools: Read, Grep, Glob`, model configurable,
+cheap default). Graded rubric (functionality / PRD-fidelity / craft / test-honesty, each 1–5 with
+justification + concrete objections) emitted as a fenced JSON verdict Foreman parses. Pipeline:
+worker done → evidence validation (WS1) → acceptance + ratchet gate (WS1) →
+**`awaiting_evaluation`** → evaluator verdict → pass ⇒ merge; objections ⇒ bounce to a *fresh*
+worker with the verdict attached (counts toward retries); evaluator uncertainty / repeated
+worker-vs-grader disagreement ⇒ escalate with both artifacts. Spawned like a worker via
+`--agent foreman-evaluator` with its own smaller budget; verdicts shown in the TUI and stored in
+`runs/<id>-eval/verdict.json`. Concrete decisions: (a) Foreman **commits the slice before
+grading** so the evaluator reviews a real `integration...HEAD` diff (and reads the worktree
+directly via its read-only tools); (b) a verdict is merge-worthy only if `verdict=="pass"` AND
+there are no listed objections AND every rubric score ≥ `evaluator_min_score` (default 3) — a
+"pass" with a low score or any objection is treated as objections; (c) "repeated disagreement"
+is operationalised as **≥2 evaluator objections** on the same issue (or exhausting the retry
+ceiling), which escalates with both sides' artifacts; (d) the evaluator runs on a cheaper model
+(`model_evaluator`, default Haiku) overridable per high-stakes issue, gated by `evaluator_enabled`.
+
+**WS3 — context architecture.** `context/initializer.py` runs once per feature on "Start build":
+writes `init.sh`, confirms the test/lint commands actually run, seeds `feature-state.md`
+(status + conventions digest + gotchas); workers run `init.sh` first. Handoff is mandatory and
+enforced Foreman-side (P2.0): every session updates `progress.md` and leaves a mergeable tree.
+Retries are **fresh-session by default** (`retry_strategy: fresh|resume`, default `fresh`): a
+cheap `context/distiller.py` produces a ≤1-page failure report (attempted / exact failing output /
+ruled-out hypotheses) and the fresh worker gets issue + acceptance check + failure report +
+`progress.md` + `feature-state.md` only. `context/assembler.py` is the single `ContextAssembler`
+with an explicit per-section token budget; it includes only the PRD sections named in the issue's
+`prd_refs` (never the whole PRD) and the conventions digest (never whole docs). Assembled-prompt
+token counts are logged per run and shown in the TUI. Concrete decisions: (a) **`init.sh` is run
+by Foreman** in the worktree before each worker (deterministic) with `feature-state.md` fed into
+the prompt; (b) the **handoff is enforced as a pre-gate check** — a finished (non-escalating)
+session whose `runs/<id>/progress.md` is missing/empty is a failed attempt *before* the merge gate
+runs; (c) the distilled failure report is **deterministic** (no model/tokens) and ≤1 page, handed
+to the fresh retry alongside the prior `progress.md` + `feature-state.md`; (d) over-budget sections
+truncate with a visible marker and `RunRecord.prompt_tokens` carries the assembled size to the TUI
+and `usage.json`. The initializer also seeds `RunRecord.outcome` plumbing reused by WS6.
+
+**WS4 — real parallelism.** `foreman-to-issues` v2 emits `touches:` per issue; the scheduler
+builds a conflict graph from `touches` overlap and never co-schedules overlapping issues, biasing
+dispatch toward maximum parallel width; the queue-review screen renders the graph so the human can
+re-slice. Second defence (footprints can lie): file-based locks — a worker's first commit writes
+`current_tasks/ISS-XXX.lock` on the integration branch; a push conflict forces the second claimant
+to back off; Foreman reclaims stale locks via heartbeat timestamps. Janitor: after every N merges
+(default 3) run specialised read-write agents one at a time, each gated by the *same* pipeline
+(tests + ratchet + evaluator): dedup, conventions-critic, docs. Janitor work appears as ordinary
+issues with `kind: janitor`. Concrete decisions: (a) footprint overlap is **path containment**
+(`src/` overlaps `src/a.py`); an empty/unknown footprint conflicts with all; dispatch is a greedy
+maximum-independent-set (prefer known-footprint, least-conflicting, id order) that never co-runs an
+overlap. (b) **No git remote in v1**, so locks (`locks.py`) are an on-disk `current_tasks/` dir in
+the integration worktree (kept out of git via `.git/info/exclude`) with **heartbeat-based stale
+reclaim** instead of push-conflict detection — remote-ready for when a remote exists; a live foreign
+lock marks the issue lock-blocked for the run (no re-dispatch spin). (c) Janitor passes run at
+**quiet points** (no feature worker in flight, `merged_feature // janitor_every` exceeds
+passes-run), one specialist at a time; janitors have an unknown footprint (run alone) and no
+acceptance check (the gate skips evidence/acceptance for janitors but still enforces suite + ratchet
++ evaluator + handoff); outcomes go to `report.janitor`, never inflating the feature merge count.
+
+**WS5 — spec integrity + review DX.** After all issues merge, a read-only auditor
+(`agents/foreman-auditor.md`) walks the PRD requirement-by-requirement → satisfied / diverged /
+unimplemented, mapping each to evidence; a divergence yields a **PRD amendment** draft that
+re-enters the hash-sealed review gate (approve ⇒ re-seal; reject ⇒ new fix issues). Review v2:
+default to **diff-since-my-last-review** (vs the version I last acted on), **open-questions-first**
+with inline answer fields that compose the review comment on submit, a ≤10-line *"decisions made
+on your behalf"* digest the grill skill emits, and read-time + word-delta badges for triage.
+`notify_command` (config) fires on review-needed / escalation with feature/doc/issue id + one-line
+reason. Concrete decisions: (a) the auditor runs **once after `_maybe_run_e2e`** on the integration
+worktree (`--agent foreman-auditor`, read-only, `model_auditor`/Haiku, reusing the evaluator
+budget), only when every feature issue has landed; (b) `needs_amendment` is **divergences only** —
+a `diverged` finding drafts a *deterministic* PRD amendment (`audit.build_amendment`, appends a
+`## PRD Amendment` section, never edits the original) written as a new `IN_REVIEW` PRD version that
+auto-invalidates the prior approval at load (R3) ⇒ it re-enters the hash-sealed gate; an
+`unimplemented` finding maps to `fix_issue_bodies`; (c) `notify_command` is best-effort (env + arg
+payload, 15s timeout, never raises) fired via `notify.fire` from the sync `_escalate` and on the
+amendment draft; (d) review-v2 diff is computed against a **body snapshot taken at the reviewer's
+last action** (`reviews/<kind>-v<n>-body.md`), since `write_doc` keeps only the latest body — first
+review shows the full body; (e) the modules (`audit.py`, `review.py`, `notify.py`) are pure/tested
+in isolation and the scheduler/TUI wire them.
+
+**WS6 — evals flywheel.** Run metadata gains the outcome taxonomy
+(`success_first_try | success_after_retry(n) | evaluator_bounce | escalated(reason) |
+human_rejected(reason)`) + cost/turns/wall-time; the TUI metrics pane renders success rate, mean
+retries/issue, cost/issue, escalation histogram, and trends. `foreman retro` clusters recurring
+failure patterns from `runs/` and proposes concrete patches to skills / rubric / prompt templates
+— drafts that pass through the **same hash-sealed human review gate** as PRDs; approval bumps the
+skill version and appends to `SKILL_CHANGELOG.md`. `foreman bench` replays an eval set (issue +
+repo snapshot + known-good outcome, mocked by default, optional real-token mode with a cost
+ceiling) and attaches a success-rate/cost/turn delta report to every proposed patch — **no patch
+lands without a bench report**. Concrete decisions: (a) the outcome label is stamped on the
+**terminal** run record (`metrics.label_success(attempts)` / `evaluator_bounce()` /
+`escalated(reason)`) and re-persisted; non-issue runs (planner/grill/initializer/evaluator/audit)
+stay unlabeled and aggregate as `legacy`; (b) failure clustering is **deterministic** (no model) —
+escalation reasons fold into `budget|timeout|regression|handoff|leading-phrase` buckets; (c) retro
+proposals are gated by reusing the **PRD hash-seal** (`retro/driver.py`: one frontmatter `.md` per
+proposal under `.foreman/retro/`, body-sha256 approval that auto-invalidates on edit); `land`
+**refuses** unless the proposal is approved-and-sealed AND a bench report is attached
+(`retro.is_landable`); a landed skill patch bumps the **target repo's installed** skill (never
+Foreman's packaged distribution) and appends `SKILL_CHANGELOG.md`; (d) `foreman bench` is mocked by
+default (no tokens; the injected `runner_factory` replays), real-token mode (`--real`) bounded by
+`bench_cost_ceiling_usd` with skipped cases **logged, never silently capped**.
+
+## P2.4 Deviations from the Phase-2 prompt (with rationale)
+- **WS3.2 handoff enforced Foreman-side, not via a Stop hook** — a headless `-p` Stop hook can't
+  hold the run open; Foreman-side post-run checks are strictly stronger and testable above the
+  backend seam (a `commit-on-stop` git backstop hook is still installed). The prompt explicitly
+  allows "hook or Foreman-side".
+- **`verification.json` is Foreman-write-only via a path-deny hook**, which is *stricter* than the
+  cwc "evidence-before-write" gate (where the agent writes the results file after reading
+  evidence). Foreman's evidence contract instead validates the `runs/<id>/evidence/` dir
+  Foreman-side. Both the deny hook and the evidence validation are kept; this matches WS1.2's
+  "workers are forbidden from writing it".
+- Unknown `touches` (Phase-1 migrated issues) are treated as **conflicting-with-all** until
+  re-sliced — the safe default for a correctness guarantee, surfaced in the conflict-graph view.
+- **WS4.2 locks are an on-disk `current_tasks/` dir + heartbeat reclaim, not git-push-conflict
+  detection** — v1 has no remote (§9). The protocol is remote-ready; the lock lives on the
+  integration branch's working tree (excluded from git) so it generalises when a remote exists.
+- **WS6.3 `foreman bench` real-mode replay through the scheduler is left as the heavier path**; the
+  default mocked mode replays recorded outcomes via an injected `runner_factory`. The enforceable
+  contract — a bench *report* (delta vs baseline) must be attached before a retro patch can land —
+  is fully implemented and tested; wiring per-case full-pipeline replay is a natural follow-up.
+
+## P2.5 Reference evidence base
+Designs above draw on: the C-compiler agent post (verifier quality, parallelism locks, agent
+specialization, time-blindness, log hygiene), the long-running-agents harness posts (initializer,
+incremental sessions, handoff artifacts, planner/generator/evaluator, gradable rubrics), the
+context-engineering post (context rot → minimal high-signal tokens), the evals post (eval suites),
+and **anthropics/cwc-long-running-agents** — whose concrete primitives we adopt: a read-only
+`evaluator.md` agent, a `PreToolUse` verify gate, a `commit-on-stop` git backstop, and the
+Default-FAIL results contract (Foreman's `verification.json` seeded `passes:false`).

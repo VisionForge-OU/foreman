@@ -50,3 +50,34 @@ e2e_enabled: true
 # One of: acceptEdits, auto, default, dontAsk, plan, bypassPermissions.
 # Never silently bypass all permissions.
 permission_mode: acceptEdits
+
+# ---- Phase 2: Trustworthy Autonomy ----
+
+# Read-only agents Foreman installs into .claude/agents/ and verifies at startup.
+required_agents:
+  - foreman-evaluator
+  - foreman-auditor
+
+# WS2: the builder never grades its own work. A read-only evaluator grades each
+# slice on a 1-5 rubric from a fresh context; objections bounce to a fresh worker.
+model_evaluator: claude-haiku-4-5-20251001    # cheaper than the worker by default
+evaluator_enabled: true
+evaluator_min_score: 3                         # a rubric score below this = objections
+evaluator_budget: { max_turns: 30, max_cost_usd: 2.00, timeout_min: 20 }
+
+# WS3: fresh-session retries with a distilled failure report (never resume context).
+retry_strategy: fresh                          # or: resume
+
+# WS4: after every N merged feature issues, run a janitor pass (same gate).
+janitor_enabled: true
+janitor_every: 3
+janitor_kinds: [dedup, conventions, docs]
+
+# WS5: read-only spec-integrity auditor + low-fatigue review notifications.
+auditor_enabled: true
+model_auditor: claude-haiku-4-5-20251001
+# notify_command: "ntfy publish my-topic"     # fired on review-needed / escalation
+
+# WS6: `foreman bench` (harness regression testing) settings.
+bench_eval_set: .foreman/eval_set
+bench_cost_ceiling_usd: 5.0

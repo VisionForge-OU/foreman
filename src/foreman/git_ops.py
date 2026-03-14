@@ -40,6 +40,22 @@ async def git(repo: Path | str, *args: str, identity: bool = False) -> GitResult
     return GitResult(proc.returncode or 0, out.decode(errors="replace"), err.decode(errors="replace"))
 
 
+def ensure_excluded(repo: Path | str, pattern: str) -> None:
+    """Add ``pattern`` to the repo's local ``.git/info/exclude`` (untracked, applies
+    to all worktrees) so Foreman's coordination files (e.g. ``current_tasks/``) are
+    never staged by ``git add -A`` (WS4.2)."""
+    info = Path(repo) / ".git" / "info"
+    exclude = info / "exclude"
+    existing = exclude.read_text() if exclude.exists() else ""
+    if pattern in existing.splitlines():
+        return
+    info.mkdir(parents=True, exist_ok=True)
+    with exclude.open("a") as fh:
+        if existing and not existing.endswith("\n"):
+            fh.write("\n")
+        fh.write(pattern + "\n")
+
+
 async def is_repo(repo: Path | str) -> bool:
     res = await git(repo, "rev-parse", "--is-inside-work-tree")
     return res.ok and res.stdout.strip() == "true"
@@ -122,3 +138,16 @@ async def merge_branch(
 async def diff_stat(worktree: Path | str) -> str:
     res = await git(worktree, "diff", "--stat", "HEAD")
     return res.stdout.strip()
+
+
+async def diff_against(worktree: Path | str, base: str) -> str:
+    """The slice's diff: changes on this branch's HEAD since it forked from ``base``.
+
+    Includes any still-uncommitted working-tree changes too, so the evaluator sees
+    exactly what would merge even if the worker hasn't committed (WS2)."""
+    committed = await git(worktree, "diff", f"{base}...HEAD")
+    uncommitted = await git(worktree, "diff", "HEAD")
+    out = committed.stdout
+    if uncommitted.stdout.strip():
+        out += "\n# --- uncommitted working-tree changes ---\n" + uncommitted.stdout
+    return out

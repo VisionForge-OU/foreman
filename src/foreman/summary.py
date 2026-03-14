@@ -26,6 +26,9 @@ class WorkerSummary:
     open_concerns: list[str] = field(default_factory=list)
     escalate: bool = False
     escalation_question: str = ""
+    # Evidence artifacts the worker claims to have saved under runs/<id>/evidence/
+    # (WS1.3 completion contract). Foreman validates these exist and are non-empty.
+    evidence: list[str] = field(default_factory=list)
     raw: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -71,5 +74,6 @@ def _from_dict(obj: dict[str, Any]) -> WorkerSummary:
         open_concerns=list(obj.get("open_concerns", []) or []),
         escalate=bool(obj.get("escalate", False)),
         escalation_question=str(obj.get("escalation_question", "")),
+        evidence=list(obj.get("evidence", []) or []),
         raw=obj,
     )

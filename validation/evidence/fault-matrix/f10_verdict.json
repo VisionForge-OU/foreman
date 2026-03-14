@@ -1,0 +1,27 @@
+{
+  "schema": "foreman-verdict/v1",
+  "issue_id": "ISS-001",
+  "verdict": "objections",
+  "scores": {
+    "functionality": {
+      "score": 5,
+      "justification": "functionality looks good"
+    },
+    "prd_fidelity": {
+      "score": 5,
+      "justification": "prd_fidelity looks good"
+    },
+    "craft": {
+      "score": 5,
+      "justification": "craft looks good"
+    },
+    "test_honesty": {
+      "score": 5,
+      "justification": "test_honesty looks good"
+    }
+  },
+  "objections": [
+    "delete endpoint hard-deletes; PRD requires soft-delete"
+  ],
+  "summary": "demo evaluator verdict"
+}

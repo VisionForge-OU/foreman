@@ -5,12 +5,15 @@ from __future__ import annotations
 from pathlib import Path
 
 from . import vendored
+from .agents import installer as agents_installer
 from .paths import RepoPaths
 
 CONFIG_TEMPLATE = """\
 # Foreman per-target-repo configuration. Edit to match your project.
 model_planner: claude-fable-5
 model_worker: claude-fable-5
+# The read-only evaluator grades on a cheaper model by default (WS2).
+model_evaluator: claude-haiku-4-5-20251001
 effort: high
 
 required_skills:
@@ -18,6 +21,10 @@ required_skills:
   - foreman-to-prd
   - foreman-to-issues
   - foreman-tdd
+
+required_agents:
+  - foreman-evaluator
+  - foreman-auditor
 
 # Commands Foreman runs ITSELF to verify a worker's claim. Set to null to skip.
 commands:
@@ -41,9 +48,36 @@ run_budget:
   max_cost_usd: 5.00
   timeout_min: 45
 
+# The read-only evaluator (builder never grades its own work, WS2).
+evaluator_enabled: true
+evaluator_min_score: 3       # a rubric score below this is treated as objections
+evaluator_budget:
+  max_turns: 30
+  max_cost_usd: 2.00
+  timeout_min: 20
+
+# The read-only spec-integrity auditor + review notifications (WS5).
+auditor_enabled: true
+model_auditor: claude-haiku-4-5-20251001
+# notify_command: "ntfy publish my-topic"   # fired on review-needed / escalation
+
+# Eval flywheel: `foreman bench` settings (WS6).
+bench_eval_set: .foreman/eval_set
+bench_cost_ceiling_usd: 5.0
+
 stuck_turns: 12
 e2e_enabled: true
 permission_mode: acceptEdits
+
+# WS3.3: retries spawn FRESH sessions with a distilled failure report (never resume
+# a failed context). Set to `resume` to continue the prior session instead.
+retry_strategy: fresh
+
+# WS4.3: run a specialist janitor pass (dedup → conventions → docs) after every N
+# merged feature issues, each gated by the same verification pipeline.
+janitor_enabled: true
+janitor_every: 3
+janitor_kinds: [dedup, conventions, docs]
 """
 
 
@@ -99,10 +133,13 @@ def init_repo(repo_root: Path | str, *, force: bool = False) -> dict:
         created_config = True
 
     installed = vendored.install(root, force=force)
+    agents_installed = agents_installer.install(root, force=force)
 
     return {
         "root": str(root),
         "config_created": created_config,
         "skills_installed": installed,
         "skills_status": vendored.status(root),
+        "agents_installed": agents_installed,
+        "agents_status": agents_installer.status(root),
     }

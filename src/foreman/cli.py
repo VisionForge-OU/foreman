@@ -24,6 +24,10 @@ def _cmd_init(args) -> int:
         print("  skills: already up to date")
     for s in result["skills_status"]:
         print(f"    - {s.name}: v{s.packaged_version} [{s.state.value}]")
+    if result.get("agents_installed"):
+        print(f"  installed/updated agents: {', '.join(result['agents_installed'])}")
+    for a in result.get("agents_status", []):
+        print(f"    - {a.name}: v{a.packaged_version} [{a.state.value}]")
     print("\nNext: run `foreman` to launch the TUI, or `foreman demo` to see it work.")
     return 0
 
@@ -46,6 +50,12 @@ def _cmd_status(args) -> int:
             any_missing = True
         print(f"  {marker} {s.name}: installed={s.installed_version} packaged={s.packaged_version}"
               f" [{s.state.value}]")
+    from .agents import installer as agents_installer
+    print("\nRead-only agents:")
+    for a in agents_installer.status(repo):
+        marker = "✓" if a.state.value == "ok" else "✗"
+        print(f"  {marker} {a.name}: installed={a.installed_version} "
+              f"packaged={a.packaged_version} [{a.state.value}]")
     store = FileStore(repo)
     print("\nFeatures:")
     slugs = store.list_features()
@@ -153,6 +163,83 @@ def _cmd_build(args) -> int:
     return 1 if report.escalated else 0
 
 
+def _cmd_retro(args) -> int:
+    """Cluster recurring failures and draft gated skill/rubric/prompt patches (WS6.2)."""
+    from .paths import RepoPaths
+    from .retro import driver, metrics
+    from .tui.controller import Controller
+
+    repo = Path(args.path)
+    if not RepoPaths(repo).is_initialized():
+        print(f"Not initialized: {repo}\nRun `foreman init` here first.")
+        return 1
+    controller = Controller(repo, demo=False)
+    store = controller.store
+    slugs = [args.slug] if args.slug else store.list_features()
+    if not slugs:
+        print("No features yet — nothing to retro.")
+        return 0
+    for slug in slugs:
+        print(metrics.render(metrics.load_feature_metrics(store, slug)))
+        print()
+    if args.list:
+        for p in sorted(store.paths.retro_dir.glob("*.md")) if store.paths.retro_dir.exists() else []:
+            sp = driver.load(store, p.stem)
+            print(f"  {sp.name}: {sp.proposal.target} [{sp.status}] — {sp.proposal.title}")
+        return 0
+    print("• analysing failure clusters and drafting patch proposals…")
+    proposals, clusters, _ = asyncio.run(
+        driver.analyze(store, controller.config, controller.backend, slugs=slugs)
+    )
+    for c in clusters:
+        print(f"  [{c.count}×] {c.pattern}")
+    names = driver.draft(store, proposals)
+    if names:
+        print(f"\nDrafted {len(names)} patch proposal(s) (status=in_review): {', '.join(names)}")
+        print("Each needs human approval AND a `foreman bench` report before it can land.")
+    else:
+        print("\nNo patch proposals were drafted.")
+    return 0
+
+
+def _cmd_bench(args) -> int:
+    """Replay the eval set and report success-rate/cost/turn deltas (WS6.3)."""
+    from .paths import RepoPaths
+    from .retro import bench, driver
+    from .tui.controller import Controller
+
+    repo = Path(args.path)
+    if not RepoPaths(repo).is_initialized():
+        print(f"Not initialized: {repo}\nRun `foreman init` here first.")
+        return 1
+    controller = Controller(repo, demo=False)
+    store = controller.store
+    eval_dir = Path(args.eval_set) if args.eval_set else (repo / controller.config.bench_eval_set)
+    cases = bench.load_eval_set(eval_dir)
+    if not cases:
+        print(f"No eval set at {eval_dir}. Seed one with past runs first.")
+        return 1
+    ceiling = None if args.real else None  # mocked default spends nothing
+
+    async def factory(case):
+        # Mocked default: replay the case's recorded baseline outcome (no tokens).
+        # Real-token replay through the scheduler is opt-in (--real) and bounded by
+        # config.bench_cost_ceiling_usd.
+        return {"outcome": case.expected_outcome, "cost_usd": 0.0, "turns": 0}
+
+    if args.real:
+        ceiling = controller.config.bench_cost_ceiling_usd
+        print(f"• real-token bench (ceiling ${ceiling:.2f})")
+    report = asyncio.run(bench.run_bench(
+        cases, runner_factory=factory, mocked=not args.real, cost_ceiling_usd=ceiling,
+    ))
+    print(report.render())
+    if args.proposal:
+        path = driver.attach_bench(store, args.proposal, report)
+        print(f"• attached bench report to proposal {args.proposal}: {path}")
+    return 0
+
+
 def _cmd_tui(args) -> int:
     from .paths import RepoPaths
 
@@ -216,6 +303,19 @@ def build_parser() -> argparse.ArgumentParser:
                     help="raise each issue's max_turns to at least this value")
     pb.add_argument("--model", default=None, help="override the worker model")
     pb.set_defaults(func=_cmd_build)
+
+    prt = sub.add_parser("retro", help="cluster recurring failures and draft gated skill/prompt patches")
+    prt.add_argument("path", nargs="?", default=".")
+    prt.add_argument("--slug", default=None, help="limit to one feature (default: all)")
+    prt.add_argument("--list", action="store_true", help="list existing proposals and exit")
+    prt.set_defaults(func=_cmd_retro)
+
+    pbn = sub.add_parser("bench", help="replay the eval set; report success-rate/cost/turn deltas")
+    pbn.add_argument("path", nargs="?", default=".")
+    pbn.add_argument("--eval-set", default=None, help="eval-set dir (default: config.bench_eval_set)")
+    pbn.add_argument("--real", action="store_true", help="real-token mode (default: mocked)")
+    pbn.add_argument("--proposal", default=None, help="attach the report to this retro proposal")
+    pbn.set_defaults(func=_cmd_bench)
 
     pt = sub.add_parser("tui", help="launch the TUI (default when no command given)")
     pt.add_argument("path", nargs="?", default=".")

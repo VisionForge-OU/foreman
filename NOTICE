@@ -18,8 +18,19 @@ skills operate in a headless, non-interactive orchestration context.
   foreman-to-issues    <- to-issues                     [src/foreman/skills/foreman-to-issues/]
   foreman-tdd          <- tdd                           [src/foreman/skills/foreman-tdd/]
 
+Phase 2 ("Trustworthy Autonomy") adds Foreman-authored, read-only agent files
+(no upstream derivation; original works under this repository's MIT License):
+
+  foreman-evaluator    [src/foreman/agents/assets/foreman-evaluator.md]  builder/grader split
+  foreman-auditor      [src/foreman/agents/assets/foreman-auditor.md]    impl↔PRD divergence audit
+  foreman-retro        [src/foreman/agents/assets/foreman-retro.md]      evals-flywheel patch proposer
+
+The evidence-gated "done" contract, the read-only evaluator, the commit-on-stop
+backstop, and the Default-FAIL results contract are adapted from the primitives in
+anthropics/cwc-long-running-agents (Apache-2.0); see DECISIONS.md §P2.5.
+
 A detailed, skill-by-skill description of what changed and why is recorded in
-DECISIONS.md, section 8.
+DECISIONS.md, section 8 (Phase 1) and §P2.3 (Phase 2).
 
 Summary of modifications:
   - Removed all live, one-question-at-a-time interactive interviewing; replaced

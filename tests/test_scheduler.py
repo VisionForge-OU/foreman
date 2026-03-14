@@ -169,7 +169,10 @@ async def test_resume_after_escalation(tmp_path):
 async def test_two_independent_issues_run_in_parallel(tmp_path):
     import asyncio
     from foreman.models import Budget, Issue
-    from foreman.demo_scripts import _init, _result, _summary_block, WORKER_CODE, _write_worker_code
+    from foreman.demo_scripts import (
+        _init, _result, _summary_block, WORKER_CODE, _write_worker_code, _write_evidence,
+        _write_progress,
+    )
     from foreman.stream_parser import parse_event
 
     repo, store, slug = await _prepare_feature(tmp_path)
@@ -177,10 +180,13 @@ async def test_two_independent_issues_run_in_parallel(tmp_path):
     for i in store.load_feature(slug).issues:
         store.delete_issue(slug, i.id)
     for iid in ("ISS-001", "ISS-002"):
+        slot = iid.lower().replace("-", "_")
         body = "## Goal\nx\n## Acceptance criteria (testable)\n- [ ] works\n"
         store.write_issue(slug, Issue(id=iid, title=iid, depends_on=[],
                                       branch=f"feature/{slug}/{iid.lower()}",
-                                      budget=Budget(), prd_refs=["PRD §1"], body=body))
+                                      budget=Budget(), prd_refs=["PRD §1"], body=body,
+                                      acceptance_check=f"tests/test_{slot}.py",
+                                      touches=[f"todo/{slot}.py", f"tests/test_{slot}.py"]))
 
     # A barrier that only releases once BOTH workers have arrived — proving they
     # are genuinely in flight at the same time (would time out if serialized).
@@ -198,8 +204,10 @@ async def test_two_independent_issues_run_in_parallel(tmp_path):
                 f"def test_{slot}():\n    assert value_{slot}() == '{spec.label}'\n",
         }
         written = _write_worker_code(spec, files)
+        ev = _write_evidence(spec, passed=True)
+        _write_progress(spec)
         yield parse_event({"type": "assistant", "message": {"content": [
-            {"type": "text", "text": _summary_block(spec.label, written, True)}],
+            {"type": "text", "text": _summary_block(spec.label, written, True, evidence=ev)}],
             "usage": {"input_tokens": 1}}})
         yield _result()
 
@@ -208,6 +216,222 @@ async def test_two_independent_issues_run_in_parallel(tmp_path):
     sched = _scheduler(store, _config(max_parallel=2), scripts=scripts)
     report = await sched.build(slug)
     assert set(report.merged) == {"ISS-001", "ISS-002"}
+
+
+@pytest.mark.asyncio
+async def test_complete_claim_without_evidence_is_a_failed_attempt(tmp_path):
+    """WS1.3 acceptance: a 'complete' summary with no evidence bounces/escalates."""
+    repo, store, slug = await _prepare_feature(tmp_path)
+    cfg = _config(max_retries=1)
+    from foreman.demo_scripts import (
+        _init, _result, _summary_block, WORKER_CODE, _write_worker_code, _write_progress,
+    )
+    from foreman.stream_parser import parse_event
+
+    async def no_evidence(spec):
+        yield _init(spec)
+        written = _write_worker_code(spec, dict(WORKER_CODE.get(spec.label, {})))
+        _write_progress(spec)  # handoff present, so it reaches the evidence gate
+        # Code + a passing-claim summary, but it saves NO evidence artifacts.
+        yield parse_event({"type": "assistant", "message": {"content": [
+            {"type": "text", "text": _summary_block(spec.label, written, True, evidence=[])}],
+            "usage": {"input_tokens": 1}}})
+        yield _result()
+
+    scripts = demo_scripts()
+    scripts["tdd:ISS-001"] = no_evidence
+    sched = _scheduler(store, cfg, scripts=scripts)
+    await sched.build(slug)
+    iss1 = store.load_issue(slug, "ISS-001")
+    assert iss1.status == IssueStatus.NEEDS_HUMAN
+    assert not store.issue_verified(slug, "ISS-001")  # never flipped to passing
+    detail = store.paths.escalation_file(slug, "ISS-001").read_text().lower()
+    assert "evidence" in detail
+
+
+@pytest.mark.asyncio
+async def test_evaluator_objection_bounces_then_passes(tmp_path):
+    """WS2.3: an evaluator objection bounces to a fresh builder; a later pass merges."""
+    repo, store, slug = await _prepare_feature(tmp_path)
+    from foreman.demo_scripts import make_evaluator_script
+
+    calls = {"ISS-001": 0}
+
+    def stateful_eval(spec):
+        calls["ISS-001"] += 1
+        if calls["ISS-001"] == 1:
+            return make_evaluator_script(
+                verdict="objections", objections=["test mirrors the implementation"]
+            )(spec)
+        return make_evaluator_script(verdict="pass")(spec)
+
+    scripts = demo_scripts()
+    scripts["evaluator:ISS-001-eval"] = stateful_eval
+    sched = _scheduler(store, _config(), scripts=scripts)
+    await sched.build(slug)
+    iss1 = store.load_issue(slug, "ISS-001")
+    assert iss1.status == IssueStatus.MERGED
+    assert iss1.attempts >= 1            # the objection cost an attempt
+    assert calls["ISS-001"] >= 2         # evaluator ran again after the bounce
+    assert store.issue_verified(slug, "ISS-001") is True
+
+
+@pytest.mark.asyncio
+async def test_evaluator_uncertain_escalates(tmp_path):
+    """WS2.3: an 'uncertain' verdict escalates to the human, not merge."""
+    repo, store, slug = await _prepare_feature(tmp_path)
+    from foreman.demo_scripts import make_evaluator_script
+
+    scripts = demo_scripts()
+    scripts["evaluator:ISS-001-eval"] = make_evaluator_script(verdict="uncertain")
+    sched = _scheduler(store, _config(), scripts=scripts)
+    await sched.build(slug)
+    iss1 = store.load_issue(slug, "ISS-001")
+    assert iss1.status == IssueStatus.NEEDS_HUMAN
+    assert not store.issue_verified(slug, "ISS-001")
+    assert store.paths.escalation_file(slug, "ISS-001").exists()
+
+
+@pytest.mark.asyncio
+async def test_evaluator_disabled_merges_without_grading(tmp_path):
+    repo, store, slug = await _prepare_feature(tmp_path)
+    cfg = _config()
+    cfg.evaluator_enabled = False
+    # No evaluator script registered; with grading off it must never be needed.
+    scripts = demo_scripts()
+    del scripts["evaluator"]
+    sched = _scheduler(store, cfg, scripts=scripts)
+    report = await sched.build(slug)
+    assert set(report.merged) == {"ISS-001", "ISS-002"}
+
+
+@pytest.mark.asyncio
+async def test_missing_progress_handoff_is_a_failed_attempt(tmp_path):
+    """WS3.2: finishing without updating progress.md is structurally rejected."""
+    repo, store, slug = await _prepare_feature(tmp_path)
+    cfg = _config(max_retries=1)
+    from foreman.demo_scripts import _init, _result, _summary_block, WORKER_CODE, \
+        _write_worker_code, _write_evidence
+    from foreman.stream_parser import parse_event
+
+    async def no_handoff(spec):
+        yield _init(spec)
+        written = _write_worker_code(spec, dict(WORKER_CODE.get(spec.label, {})))
+        ev = _write_evidence(spec, passed=True)  # evidence present, but NO progress.md
+        yield parse_event({"type": "assistant", "message": {"content": [
+            {"type": "text", "text": _summary_block(spec.label, written, True, evidence=ev)}],
+            "usage": {"input_tokens": 1}}})
+        yield _result()
+
+    scripts = demo_scripts()
+    scripts["tdd:ISS-001"] = no_handoff
+    sched = _scheduler(store, cfg, scripts=scripts)
+    await sched.build(slug)
+    iss1 = store.load_issue(slug, "ISS-001")
+    assert iss1.status == IssueStatus.NEEDS_HUMAN
+    assert "progress.md" in store.paths.escalation_file(slug, "ISS-001").read_text()
+
+
+@pytest.mark.asyncio
+async def test_initializer_runs_once_and_seeds_artifacts(tmp_path):
+    """WS3.1: the feature initializer runs and seeds init.sh + feature-state.md."""
+    repo, store, slug = await _prepare_feature(tmp_path)
+    sched = _scheduler(store, _config())
+    await sched.build(slug)
+    assert store.paths.init_script(slug).exists()
+    assert "Conventions" in store.paths.feature_state_file(slug).read_text()
+    # A second build does not re-run the initializer (idempotent in-process).
+    assert slug in sched._initialized
+
+
+@pytest.mark.asyncio
+async def test_fresh_retry_carries_distilled_report_and_logs_tokens(tmp_path):
+    """WS3.3/3.4: a retry gets a distilled failure report; prompt tokens are recorded."""
+    import json
+    repo, store, slug = await _prepare_feature(tmp_path)
+    prompts: list[str] = []
+    from foreman.demo_scripts import make_tdd_script
+
+    def capture(spec):
+        prompts.append(spec.prompt)
+        return make_tdd_script(fail_first=True)(spec)
+
+    scripts = demo_scripts()
+    scripts["tdd:ISS-001"] = capture
+    sched = _scheduler(store, _config(), scripts=scripts)
+    await sched.build(slug)
+    # First attempt has no failure report; the retry carries a distilled one.
+    assert not any("distilled failure report" in p for p in prompts[:1])
+    assert any("distilled failure report" in p for p in prompts[1:])
+    # Assembled-prompt token counts are recorded on the run records (WS3.4).
+    usages = list(store.paths.runs_dir(slug).glob("*-ISS-001/usage.json"))
+    assert any(json.loads(u.read_text()).get("prompt_tokens", 0) > 0 for u in usages)
+
+
+@pytest.mark.asyncio
+async def test_stale_lock_is_reclaimed_and_build_proceeds(tmp_path):
+    """WS4.2: a dead worker's stale lock is reclaimed so the build can proceed."""
+    from foreman import locks
+    repo, store, slug = await _prepare_feature(tmp_path)
+    sched = _scheduler(store, _config())
+    # Plant a STALE lock for ISS-001 (heartbeat far in the past) before building.
+    await sched.worktrees.ensure_base()
+    integ = await sched.worktrees.integration_worktree()
+    locks.acquire(integ, "ISS-001", run_id="dead-worker", now=0.0, ttl_s=10)
+    report = await sched.build(slug)
+    assert set(report.merged) == {"ISS-001", "ISS-002"}  # reclaimed, then built
+    assert locks.active(integ) == {}  # released after completion
+
+
+@pytest.mark.asyncio
+async def test_live_foreign_lock_blocks_without_spinning(tmp_path):
+    """WS4.2: a live foreign lock blocks an issue (no infinite re-dispatch)."""
+    from foreman import locks
+    import time
+    repo, store, slug = await _prepare_feature(tmp_path)
+    sched = _scheduler(store, _config())
+    await sched.worktrees.ensure_base()
+    integ = await sched.worktrees.integration_worktree()
+    # A fresh foreign lock on ISS-001 (heartbeat = now) — looks alive.
+    locks.acquire(integ, "ISS-001", run_id="other-proc", now=time.time())
+    report = await sched.build(slug)  # must terminate, not hang
+    assert "ISS-001" not in report.merged
+    assert "ISS-001" in report.blocked or store.load_issue(slug, "ISS-001").status \
+        == IssueStatus.QUEUED
+
+
+@pytest.mark.asyncio
+async def test_janitor_pass_runs_and_is_gated(tmp_path):
+    """WS4.3: janitor passes run on cadence, as kind=janitor issues, gated like any work."""
+    repo, store, slug = await _prepare_feature(tmp_path)
+    cfg = _config()
+    cfg.janitor_enabled = True
+    cfg.janitor_every = 1            # a pass after every merged feature issue
+    cfg.janitor_kinds = ["dedup", "docs"]
+    sched = _scheduler(store, cfg)
+    report = await sched.build(slug)
+    assert set(report.merged) == {"ISS-001", "ISS-002"}
+    # Janitor issues were created (kind=janitor) and ran through the pipeline.
+    state = store.load_feature(slug)
+    jan = [i for i in state.issues if i.is_janitor]
+    assert jan, "expected janitor issues to be created"
+    assert all(i.status in (IssueStatus.MERGED, IssueStatus.DONE) for i in jan)
+    assert report.janitor  # surfaced in the report
+    assert {kind for _, kind, _ in report.janitor} <= {"dedup", "docs"}
+    # Janitors were verified: their verification.json entries are set by Foreman.
+    v = store.verification(slug)
+    assert any(jid in v and v[jid].passes for jid in (i.id for i in jan))
+
+
+@pytest.mark.asyncio
+async def test_janitor_disabled_runs_no_pass(tmp_path):
+    repo, store, slug = await _prepare_feature(tmp_path)
+    cfg = _config()
+    cfg.janitor_enabled = False
+    sched = _scheduler(store, cfg)
+    report = await sched.build(slug)
+    assert report.janitor == []
+    assert not [i for i in store.load_feature(slug).issues if i.is_janitor]
 
 
 @pytest.mark.asyncio

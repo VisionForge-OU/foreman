@@ -1,7 +1,7 @@
 ---
 name: foreman-grill-docs
 description: Headless grilling pass that challenges an approved implementation plan against the existing codebase and domain model, then writes an ADR draft and a PRD draft into the Foreman feature directory. Self-answers every question it can from the code/docs and surfaces the rest as an "Open questions for reviewer" block instead of interviewing a live user.
-foreman_skill_version: 1
+foreman_skill_version: 2
 ---
 
 <what-to-do>
@@ -86,6 +86,16 @@ questions block (see format below). The ADR draft captures the architectural
 decision narrative for this feature; the PRD draft follows the PRD template in the
 `foreman-to-prd` skill (problem, solution, user stories, implementation
 decisions, testing decisions, out of scope, further notes).
+
+In the **PRD draft only**, immediately after the open-questions block and before
+the prose, emit a `## Decisions made on your behalf` section: **≤10 bullets**, each
+a single audit-judgment call you settled autonomously that the reviewer should be
+able to sanity-check **without re-reading the prose** (e.g. "Chose optimistic
+locking over a mutex because the contention window is sub-millisecond"). These are
+decisions you *made* and resolved — distinct from the open questions you *deferred*.
+Keep each bullet to one line; omit the section only if you genuinely made no
+non-obvious calls (then write a single line: `_None — no judgment calls beyond the
+plan._`).
 
 ### 5. On a revision pass
 

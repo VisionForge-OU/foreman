@@ -39,6 +39,7 @@ class WorkerLog:
     lines: list[str] = field(default_factory=list)
     cost: float = 0.0
     turns: int = 0
+    prompt_tokens: int = 0  # WS3.4: assembled-prompt size, for context-bloat visibility
 
     def append(self, line: str) -> None:
         self.lines.append(line)
@@ -133,9 +134,11 @@ class Controller:
         wl = self.workers.setdefault(issue_id, WorkerLog(issue_id))
         wl.status = status
         wl.cost = result.record.cost_usd or wl.cost
-        wl.append(f"■ finished: {status} (${wl.cost:.4f}, {result.record.num_turns} turns)")
+        wl.prompt_tokens = result.record.prompt_tokens or wl.prompt_tokens
+        tok = f", {wl.prompt_tokens} ctx-tok" if wl.prompt_tokens else ""
+        wl.append(f"■ finished: {status} (${wl.cost:.4f}, {result.record.num_turns} turns{tok})")
         self._emit(f"  ■ worker {issue_id}: {status} "
-                   f"(${wl.cost:.4f}, {result.record.num_turns} turns)")
+                   f"(${wl.cost:.4f}, {result.record.num_turns} turns{tok})")
 
     def escalated(self, issue_id: str, reason: str) -> None:
         self.bell_pending = True
@@ -154,6 +157,10 @@ class Controller:
     def skills_status(self):
         return vendored.status(self.repo_root)
 
+    def agents_status(self):
+        from ..agents import installer as agents_installer
+        return agents_installer.status(self.repo_root)
+
     def missing_required(self):
         return vendored.missing_required(self.repo_root, self.config.required_skills)
 
@@ -162,6 +169,62 @@ class Controller:
 
     def escalations(self, slug: str):
         return self.scheduler.escalations(slug)
+
+    def feature_metrics_text(self, slug: str) -> str:
+        """WS6.1: the metrics pane for a feature (success rate, retries, cost, escalations)."""
+        from ..retro import metrics
+        return metrics.render(metrics.load_feature_metrics(self.store, slug))
+
+    def metrics_trend_text(self) -> str:
+        from ..retro import metrics
+        per = [metrics.load_feature_metrics(self.store, s) for s in self.store.list_features()]
+        return metrics.trend(per)
+
+    def review_badges(self, slug: str, kind: str) -> str:
+        """WS5.2: read-time + word-delta triage badges for a doc awaiting review."""
+        from .. import review
+        doc = self.feature(slug).doc(kind)
+        if doc is None:
+            return ""
+        prior = self._last_reviewed_body(slug, kind, doc.version)
+        b = review.badges(prior, doc.body)
+        return f"≈{b['read_min']:.1f} min · {b['word_delta']:+d} words"
+
+    def review_diff(self, slug: str, kind: str) -> str:
+        """WS5.2: diff since the version the reviewer last acted on (else full body)."""
+        from .. import review
+        doc = self.feature(slug).doc(kind)
+        if doc is None:
+            return ""
+        prior = self._last_reviewed_body(slug, kind, doc.version)
+        d = review.diff_since(prior, doc.body)
+        return d or doc.body
+
+    def _last_reviewed_body(self, slug: str, kind: str, current_version: int) -> str:
+        """Body of the most recent version the reviewer acted on (for diffing)."""
+        for v in range(current_version - 1, 0, -1):
+            rev = self.store.latest_review(slug, kind, v)
+            if rev is not None:
+                snap = self.store.paths.reviews_dir(slug) / f"{kind}-v{v}-body.md"
+                if snap.exists():
+                    return snap.read_text()
+        return ""
+
+    def conflict_summary(self, slug: str) -> str:
+        """A compact conflict-graph summary for the queue-review screen (WS4.1)."""
+        from .. import conflicts
+        issues = [i for i in self.feature(slug).issues if not i.is_janitor]
+        if not issues:
+            return ""
+        graph = conflicts.conflict_graph(issues)
+        unknown = [i.id for i in issues if not i.footprint_known]
+        edges = sorted({tuple(sorted((a, b))) for a, nb in graph.items() for b in nb})
+        lines = [f"Conflict graph: {len(edges)} overlapping pair(s)"]
+        if unknown:
+            lines.append(f"  ⚠ unknown footprint (runs alone): {', '.join(unknown)}")
+        for a, b in edges[:8]:
+            lines.append(f"  {a} ↔ {b}")
+        return "\n".join(lines)
 
     # ------------------------------------------------------------------ #
     # Actions (sync where possible; async for agent work)
@@ -173,6 +236,12 @@ class Controller:
         self.store.approve_doc(slug, kind, reviewer="reviewer")
 
     def request_changes(self, slug: str, kind: str, comments: str) -> None:
+        # WS5.2: snapshot the body the reviewer acted on, so the next draft can be
+        # shown as a diff-since-last-review.
+        doc = self.feature(slug).doc(kind)
+        if doc is not None:
+            self.store.paths.reviews_dir(slug).mkdir(parents=True, exist_ok=True)
+            (self.store.paths.reviews_dir(slug) / f"{kind}-v{doc.version}-body.md").write_text(doc.body)
         self.store.request_changes(slug, kind, reviewer="reviewer", comments=comments)
 
     def confirm_queue(self, slug: str) -> None:

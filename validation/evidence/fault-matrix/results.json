@@ -1,0 +1,68 @@
+[
+  {
+    "id": "F1",
+    "name": "Hand-edit approved PRD auto-invalidates approval (status\u2192in_review)",
+    "status": "PASS",
+    "evidence": "status before=approved after=in_review, approval=None; evidence/fault-matrix/f1_prd_after.md"
+  },
+  {
+    "id": "F2",
+    "name": "Issue without acceptance_check cannot build; visible error",
+    "status": "PASS",
+    "evidence": "missing=['ISS-001']; SchedulerError='issue(s) missing a runnable acceptance_check (WS1.1): ISS-001'"
+  },
+  {
+    "id": "F3",
+    "name": "PreToolUse hook denies worker writes to verification.json/issue files",
+    "status": "PASS",
+    "evidence": "deny(write)=True deny(edit-issue)=True bash-exit2=True benign-allowed=True; evidence/fault-matrix/f3_hook.txt"
+  },
+  {
+    "id": "F4",
+    "name": "Complete claim with empty evidence/ treated as failed attempt",
+    "status": "PASS",
+    "evidence": "evidence.validate(empty).ok=False; ISS-001 status=needs_human, verified=False, escalation mentions evidence"
+  },
+  {
+    "id": "F5",
+    "name": "Regression ratchet blocks merge and NAMES the newly-failing test",
+    "status": "PASS",
+    "evidence": "baseline=['tests/test_a.py::test_alpha', 'tests/test_a.py::test_beta'] regressed=['tests/test_a.py::test_alpha']; gate.run_gate folds this in (gate.py:88-92); evidence/fault-matrix/f5_ratchet.txt"
+  },
+  {
+    "id": "F6",
+    "name": "max_turns budget kill escalates to needs_human with reason",
+    "status": "PASS",
+    "evidence": "status=needs_human; escalation reason contains 'turn budget'=True"
+  },
+  {
+    "id": "F7",
+    "name": "Acceptance-fail \u2192 fresh-session retry w/ distilled report \u2192 escalate \u2192 resume consumes answer",
+    "status": "PASS",
+    "evidence": "retry_has_distilled_report=True first_clean=True escalated=True resume_outcome=done; evidence/fault-matrix/f7_retry_prompt.txt"
+  },
+  {
+    "id": "F8",
+    "name": "Overlapping touches never co-scheduled; shown in conflict graph",
+    "status": "PASS",
+    "evidence": "graph[ISS-001]=['ISS-002']; dispatch chose=['ISS-001', 'ISS-003'] (a&b never together=True, disjoint c included=True)"
+  },
+  {
+    "id": "F9",
+    "name": "Stale lock (old heartbeat) reclaimed; work proceeds",
+    "status": "PASS",
+    "evidence": "is_stale=True reclaimed=['ISS-XXX'] reacquired=True"
+  },
+  {
+    "id": "F10",
+    "name": "Evaluator objects with rubric+objection; bounce counts toward retries",
+    "status": "PASS",
+    "evidence": "status=merged attempts=1 eval_runs=2 objection_recorded=True; evidence/fault-matrix/f10_verdict.json"
+  },
+  {
+    "id": "F12",
+    "name": "notify_command fires on escalation with feature/issue id + reason",
+    "status": "PASS",
+    "evidence": "notify log lines=47; escalation fired=True; evidence/fault-matrix/f12_notify.log"
+  }
+]

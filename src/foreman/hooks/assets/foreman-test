@@ -1,0 +1,129 @@
+#!/usr/bin/env python3
+"""foreman-test — the agent-shaped test runner installed into each worktree (WS1.5).
+
+Wraps the project's configured test command (from ``$FOREMAN_TEST_CMD``) and:
+- keeps console output to <= ~20 lines (counts + failures only);
+- writes the FULL output to a log file ($FOREMAN_TEST_LOG or .foreman-test.log)
+  with every failure on a single ``ERROR``-prefixed greppable line;
+- prints pre-computed summary stats and elapsed wall-clock time;
+- ``--fast`` runs a deterministic, per-worker seeded random subsample (seed =
+  $FOREMAN_WORKER_ID) for cheap inner-loop runs — the FULL suite is still
+  mandatory before completion (the foreman-tdd skill enforces this);
+- for pytest, emits an authoritative ``FOREMAN-TEST-RESULTS {json}`` trailer with
+  passed/failed node ids so Foreman's regression ratchet is precise.
+
+Standalone: no foreman import (runs in the worker's environment).
+"""
+
+import hashlib
+import json
+import os
+import re
+import shlex
+import subprocess
+import sys
+import time
+
+CONSOLE_MAX = 20
+_RA = re.compile(r"^(PASSED|FAILED|ERROR|XFAIL|XPASS)\s+(\S+)")
+_VERBOSE = re.compile(r"^(\S+::\S+)\s+(PASSED|FAILED|ERROR)\b")
+
+
+def _is_pytest(cmd: str) -> bool:
+    return "pytest" in cmd.split("#", 1)[0]
+
+
+def _seed() -> int:
+    wid = os.environ.get("FOREMAN_WORKER_ID", "default")
+    return int(hashlib.sha1(wid.encode()).hexdigest()[:8], 16)
+
+
+def _fast_pytest_args(base_cmd: str) -> list[str]:
+    """Collect node ids, seed-shuffle, take ~1/3 (min 1). Deterministic per worker."""
+    try:
+        collect = subprocess.run(
+            shlex.split(base_cmd) + ["--collect-only", "-q"],
+            capture_output=True, text=True, timeout=120,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return []
+    ids = [ln.strip() for ln in collect.stdout.splitlines() if "::" in ln]
+    if not ids:
+        return []
+    import random
+    rng = random.Random(_seed())
+    rng.shuffle(ids)
+    keep = ids[: max(1, len(ids) // 3)]
+    return keep
+
+
+def main() -> int:
+    fast = "--fast" in sys.argv[1:]
+    base_cmd = os.environ.get("FOREMAN_TEST_CMD", "").strip()
+    if not base_cmd:
+        sys.stderr.write("foreman-test: $FOREMAN_TEST_CMD is not set\n")
+        return 2
+    log_path = os.environ.get("FOREMAN_TEST_LOG", ".foreman-test.log")
+    pytest = _is_pytest(base_cmd)
+
+    argv = shlex.split(base_cmd)
+    selected_note = ""
+    if pytest:
+        argv += ["-rA"]
+        if fast:
+            keep = _fast_pytest_args(base_cmd)
+            if keep:
+                argv += keep
+                selected_note = f" (--fast: {len(keep)} sampled, seed={_seed()})"
+
+    start = time.time()
+    proc = subprocess.run(argv, capture_output=True, text=True)
+    elapsed = time.time() - start
+    output = (proc.stdout or "") + (proc.stderr or "")
+
+    passed, failed = [], []
+    if pytest:
+        for line in output.splitlines():
+            s = line.strip()
+            m = _RA.match(s)
+            if m and m.group(1) in ("PASSED", "FAILED", "ERROR"):
+                (passed if m.group(1) == "PASSED" else failed).append(m.group(2))
+                continue
+            m2 = _VERBOSE.match(s)
+            if m2:
+                (passed if m2.group(2) == "PASSED" else failed).append(m2.group(1))
+
+    # Full log with one ERROR-prefixed line per failure for grepping.
+    try:
+        with open(log_path, "w") as fh:
+            fh.write(output)
+            fh.write("\n\n# --- foreman-test failure index ---\n")
+            for f in failed:
+                fh.write(f"ERROR {f}\n")
+    except OSError:
+        pass
+
+    # Quiet console: counts + failures only, capped.
+    rc = proc.returncode
+    status = "PASS" if rc == 0 else "FAIL"
+    lines = [f"foreman-test [{status}] {elapsed:.1f}s{selected_note} — full log: {log_path}"]
+    if pytest:
+        lines.append(f"  {len(passed)} passed, {len(failed)} failed")
+        for f in failed[: CONSOLE_MAX - 3]:
+            lines.append(f"  ERROR {f}")
+        if len(failed) > CONSOLE_MAX - 3:
+            lines.append(f"  …and {len(failed) - (CONSOLE_MAX - 3)} more (grep ERROR {log_path})")
+    else:
+        tail = [ln for ln in output.splitlines() if ln.strip()][-(CONSOLE_MAX - 2):]
+        lines += [f"  {ln}" for ln in tail]
+    print("\n".join(lines[:CONSOLE_MAX]))
+
+    # Authoritative results trailer for the ratchet (pytest only, and only for a
+    # FULL run — a --fast subsample must not shrink the baseline).
+    if pytest and not fast:
+        print("FOREMAN-TEST-RESULTS " + json.dumps({"passed": passed, "failed": failed}))
+    return rc
+
+
+if __name__ == "__main__":
+    sys.exit(main())

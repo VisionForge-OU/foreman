@@ -1,0 +1,4 @@
+write verification.json: rc=0 out='{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "Foreman: workers may not write /r/.foreman/features/x/verification.json \\u2014 Foreman owns it."}}\n'
+edit issue file: rc=0 out='{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "Foreman: workers may not write /r/.foreman/features/x/issues/ISS-001.md \\u2014 Foreman owns it."}}\n'
+bash redirect: rc=2 err='Foreman: that command writes a Foreman-owned file (.foreman/features/x/verification.json); it is blocked. Foreman flips verification itself.\n'
+benign app write: rc=0 out=''

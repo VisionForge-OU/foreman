@@ -36,7 +36,12 @@ foreman = "foreman.cli:main"
 [tool.hatch.build.targets.wheel]
 # Ships the package including the vendored skills (.md) and fixtures data files.
 packages = ["src/foreman"]
-artifacts = ["src/foreman/skills/**", "src/foreman/fixtures/**"]
+artifacts = [
+    "src/foreman/skills/**",
+    "src/foreman/fixtures/**",
+    "src/foreman/hooks/assets/**",
+    "src/foreman/agents/**",
+]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

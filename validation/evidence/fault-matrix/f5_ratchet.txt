@@ -1,0 +1,6 @@
+baseline passed ids: ['tests/test_a.py::test_alpha', 'tests/test_a.py::test_beta']
+after break: failed ids: ['tests/test_a.py::test_alpha']
+ratchet.ok=False regressed=['tests/test_a.py::test_alpha']
+
+regression ratchet: BLOCKED — previously-passing test(s) now failing:
+  - tests/test_a.py::test_alpha

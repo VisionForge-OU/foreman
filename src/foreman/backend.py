@@ -38,6 +38,11 @@ class RunSpec:
     label: str = ""                 # run label, e.g. "ISS-001" or "planner"
     extra_dirs: list[Path] = field(default_factory=list)
     session_id: Optional[str] = None  # for --resume on escalation answers (§7)
+    # Phase-2: extra settings file (worktree hooks) + env overlay (P2.3 WS1.3).
+    settings_path: Optional[Path] = None
+    env: dict[str, str] = field(default_factory=dict)
+    # Phase-2: a named subagent to run as (--agent), e.g. the read-only evaluator.
+    agent: Optional[str] = None
 
     def argv(self) -> list[str]:
         """Build the ``claude`` command line (single source of truth for flags)."""
@@ -49,6 +54,10 @@ class RunSpec:
             "--effort", self.effort,
             "--permission-mode", self.permission_mode,
         ]
+        if self.agent:
+            argv += ["--agent", self.agent]
+        if self.settings_path is not None:
+            argv += ["--settings", str(self.settings_path)]
         # Native cost ceiling, belt-and-suspenders with Foreman's own enforcement.
         if self.budget.max_cost_usd and self.budget.max_cost_usd > 0:
             argv += ["--max-budget-usd", f"{self.budget.max_cost_usd}"]
@@ -83,13 +92,15 @@ class ClaudeBackend:
             )
         argv = spec.argv()
         argv[0] = self.executable
+        env = os.environ.copy()
+        env.update(spec.env or {})  # worktree-hook PATH + FOREMAN_TEST_CMD etc. (WS1.3)
         proc = await asyncio.create_subprocess_exec(
             *argv,
             cwd=str(spec.cwd),
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            env=os.environ.copy(),
+            env=env,
         )
         try:
             assert proc.stdout is not None

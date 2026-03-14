@@ -1,0 +1,17 @@
+{
+  "metrics": {
+    "slug": "s52",
+    "n_runs": 10,
+    "success_rate": 1.0,
+    "mean_retries": 1.0,
+    "cost_per_issue": 0.28,
+    "total_cost": 0.56,
+    "escalation_reasons": {},
+    "by_outcome": {
+      "legacy": 8,
+      "success_first_try": 2
+    }
+  },
+  "summed_usage_cost": 0.56,
+  "n_usage_files": 10
+}

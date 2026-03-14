@@ -54,14 +54,20 @@ class VerifyResult:
         )
 
 
-async def _run_command(name: str, command: str, cwd: Path, timeout_s: float) -> CommandOutcome:
+async def _run_command(
+    name: str, command: str, cwd: Path, timeout_s: float,
+    env: Optional[dict] = None,
+) -> CommandOutcome:
+    run_env = os.environ.copy()
+    if env:
+        run_env.update(env)
     try:
         proc = await asyncio.create_subprocess_shell(
             command,
             cwd=str(cwd),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
-            env=os.environ.copy(),
+            env=run_env,
         )
         try:
             out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout_s)
@@ -82,8 +88,13 @@ async def verify(
     *,
     names: tuple[str, ...] = ("test", "lint", "typecheck"),
     timeout_s: float = 600.0,
+    env: Optional[dict] = None,
 ) -> VerifyResult:
-    """Run the named commands in ``cwd``. Absent/empty commands are skipped."""
+    """Run the named commands in ``cwd``. Absent/empty commands are skipped.
+
+    ``env`` overlays the subprocess environment (Phase-2: the worktree-hook PATH +
+    ``FOREMAN_TEST_CMD`` so Foreman's verification run resolves ``foreman-test``).
+    """
     result = VerifyResult()
     for name in names:
         command = commands.get(name)
@@ -91,5 +102,12 @@ async def verify(
         if not command:
             result.outcomes.append(CommandOutcome(name, "", False, None, None, ""))
             continue
-        result.outcomes.append(await _run_command(name, command, cwd, timeout_s))
+        result.outcomes.append(await _run_command(name, command, cwd, timeout_s, env=env))
     return result
+
+
+def outcome_by_name(result: VerifyResult, name: str) -> Optional[CommandOutcome]:
+    for o in result.outcomes:
+        if o.name == name:
+            return o
+    return None

@@ -1,0 +1,47 @@
+EVENT=escalation FEATURE=f12 REF=ISS-001 REASON=gate still failing after 1 attempt(s) (acceptance check failed):
+[acceptance] FAILED `/home/arash/foreman/.venv/bin/python -m pytest -q tests/test_store.py`
+..F                                                                      [100%]
+=================================== FAILURES ===================================
+__________________________ test_intentionally_broken ___________________________
+
+    def test_intentionally_broken():
+>       assert False
+E       assert False
+
+tests/test_store.py:19: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_store.py::test_intentionally_broken - assert False
+1 failed, 2 passed in 0.03s
+
+- test [FAIL] `foreman-test`
+- lint: skipped (not configured)
+- typecheck: skipped (not configured)
+
+### test failed (`foreman-test`)
+foreman-test [FAIL] 0.4s — full log: /tmp/foreman-worktrees/b340e420fb/ISS-001.foreman-hooks/foreman-test.log
+  2 passed, 1 failed
+  ERROR tests/test_store.py::test_intentionally_broken
+FOREMAN-TEST-RESULTS {"passed": ["tests/test_store.py::test_mark_done_completes_item", "tests/test_store.py::test_mark_done_unknown_id_raises"], "failed": ["tests/test_store.py::test_intentionally_broken"]} | args: escalation f12 ISS-001 gate still failing after 1 attempt(s) (acceptance check failed):
+[acceptance] FAILED `/home/arash/foreman/.venv/bin/python -m pytest -q tests/test_store.py`
+..F                                                                      [100%]
+=================================== FAILURES ===================================
+__________________________ test_intentionally_broken ___________________________
+
+    def test_intentionally_broken():
+>       assert False
+E       assert False
+
+tests/test_store.py:19: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_store.py::test_intentionally_broken - assert False
+1 failed, 2 passed in 0.03s
+
+- test [FAIL] `foreman-test`
+- lint: skipped (not configured)
+- typecheck: skipped (not configured)
+
+### test failed (`foreman-test`)
+foreman-test [FAIL] 0.4s — full log: /tmp/foreman-worktrees/b340e420fb/ISS-001.foreman-hooks/foreman-test.log
+  2 passed, 1 failed
+  ERROR tests/test_store.py::test_intentionally_broken
+FOREMAN-TEST-RESULTS {"passed": ["tests/test_store.py::test_mark_done_completes_item", "tests/test_store.py::test_mark_done_unknown_id_raises"], "failed": ["tests/test_store.py::test_intentionally_broken"]}

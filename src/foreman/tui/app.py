@@ -83,7 +83,8 @@ class ReviewScreen(Screen):
     def compose(self) -> ComposeResult:
         yield Header()
         yield Static(id="title")
-        yield Static(id="oq")
+        yield Static(id="digest")   # WS5.2: "decisions made on your behalf"
+        yield Static(id="oq")       # open questions first
         with VerticalScroll(id="doc"):
             yield Markdown(id="md")
         yield Label("Comments (used as answers to open questions):")
@@ -111,7 +112,18 @@ class ReviewScreen(Screen):
             md.update("")
             oq.update("")
             return
-        title.update(f"[b]{self.kind.upper()}[/b]  v{d.version}  ·  status: {d.status.value}")
+        badges = self.app.controller.review_badges(self.slug, self.kind)
+        title.update(f"[b]{self.kind.upper()}[/b]  v{d.version}  ·  status: {d.status.value}"
+                     + (f"   ·   {badges}" if badges else ""))
+        # WS5.2: surface the grill's "decisions made on your behalf" digest up top.
+        from .. import review
+        digest = review.decisions_digest(d.body)
+        dwidget = self.query_one("#digest", Static)
+        if digest:
+            dwidget.update("[b]Decisions made on your behalf:[/b]\n"
+                           + "\n".join(f"  • {x}" for x in digest))
+        else:
+            dwidget.update("")
         md.update(d.body)
         if d.has_open_questions:
             qs = "\n".join(f"  • {q}" for q in d.open_questions)
@@ -315,6 +327,30 @@ class SettingsScreen(Screen):
         )
 
 
+class MetricsScreen(Screen):
+    """WS6.1: success rate, mean retries/issue, cost/issue, escalation histogram, trends."""
+    BINDINGS = [Binding("escape", "app.pop_screen", "Back")]
+
+    def __init__(self, slug: Optional[str]):
+        super().__init__()
+        self.slug = slug
+
+    def compose(self) -> ComposeResult:
+        yield Header()
+        with VerticalScroll():
+            yield Static(id="metrics")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        c = self.app.controller
+        parts = []
+        if self.slug:
+            parts.append(c.feature_metrics_text(self.slug))
+        parts.append("")
+        parts.append(c.metrics_trend_text())
+        self.query_one("#metrics", Static).update("\n".join(parts))
+
+
 class DashboardScreen(Screen):
     BINDINGS = [
         Binding("n", "new_feature", "New"),
@@ -326,6 +362,7 @@ class DashboardScreen(Screen):
         Binding("v", "review", "Review"),
         Binding("w", "workers", "Workers"),
         Binding("x", "attention", "Attention"),
+        Binding("m", "metrics", "Metrics"),
         Binding("comma", "settings", "Settings"),
         Binding("q", "app.quit", "Quit"),
     ]
@@ -380,6 +417,10 @@ class DashboardScreen(Screen):
         missing = c.missing_required()
         if missing:
             lines.append(f"[red]⚠ missing: {', '.join(missing)}[/red]")
+        lines.append("[b]Read-only agents[/b]")
+        for a in c.agents_status():
+            mark = "✓" if a.state.value == "ok" else "✗"
+            lines.append(f" {mark} {a.name} v{a.packaged_version} [{a.state.value}]")
         skills.update("\n".join(lines))
 
         slug = self.app.current_slug
@@ -395,11 +436,21 @@ class DashboardScreen(Screen):
         st = c.feature(slug)
         cost = c.feature_cost(slug)
         n_workers = sum(1 for w in c.workers.values() if w.status == "running")
-        hint.update(
+        hint_text = (
             f"[b]{slug}[/b] — phase: [b]{st.phase.value}[/b]   "
             f"cost: ${cost:.4f}   active workers: {n_workers}\n"
             + PHASE_HINT.get(st.phase, "")
         )
+        if st.phase == Phase.QUEUE_REVIEW:  # WS4.1: show the conflict graph here
+            summary = c.conflict_summary(slug)
+            if summary:
+                hint_text += "\n" + summary
+        if st.phase in (Phase.PLAN_REVIEW, Phase.DOC_REVIEW):  # WS5.2 triage badges
+            for kind in DOC_KINDS:
+                d = st.doc(kind)
+                if d and d.status.value in ("in_review", "changes_requested"):
+                    hint_text += f"\n  {kind}: {c.review_badges(slug, kind)} [{d.status.value}]"
+        hint.update(hint_text)
         board.update(self._kanban(st))
 
     def _kanban(self, st) -> Table:
@@ -487,6 +538,9 @@ class DashboardScreen(Screen):
 
     def action_settings(self) -> None:
         self.app.push_screen(SettingsScreen())
+
+    def action_metrics(self) -> None:
+        self.app.push_screen(MetricsScreen(self.app.current_slug))
 
 
 class ForemanTUI(App):

@@ -56,8 +56,10 @@ def test_outdated_skill_is_detected_and_updated(tmp_path):
     init_repo(tmp_path)
     paths = RepoPaths(tmp_path)
     # Simulate an old install by downgrading the version marker on disk.
+    import re
     skill_md = paths.skills_install_dir / "foreman-tdd" / "SKILL.md"
-    text = skill_md.read_text().replace("foreman_skill_version: 1", "foreman_skill_version: 0")
+    text = re.sub(r"foreman_skill_version: \d+", "foreman_skill_version: 0",
+                  skill_md.read_text())
     skill_md.write_text(text)
 
     states = {s.name: s.state for s in vendored.status(tmp_path)}

@@ -1,0 +1,36 @@
+proposal p001 status=in_review sealed=False
+proposal file: /home/arash/foreman-validation/step54-work/.foreman/retro/p001.md
+baseline success_rate=0.5 current=1.0
+delta={'success_rate': 0.5, 'total_cost': 0.0, 'mean_turns': -2.0}
+bench report attached at /home/arash/foreman-validation/step54-work/.foreman/retro/p001.bench.json exists=True
+is_landable(before approval)=True
+
+--- proposal doc head ---
+---
+schema: foreman-retro-proposal/v1
+name: p001
+target: skill:foreman-tdd
+title: Clarify red-green wording in foreman-tdd
+version_bump: 1
+status: in_review
+diff: '--- a/SKILL.md
+
+  +++ b/SKILL.md
+
+  @@
+
+  -Write a test.
+
+  +Write exactly one failing test first (red).
+
+  '
+rationale: Failure cluster escalated:gate-failing suggests the TDD step wording is
+  ambiguous.
+---
+
+# Retro patch proposal: Clarify red-green wording in foreman-tdd
+
+**Target:** `skill:foreman-tdd`
+**Version bump:** +1
+
+## Ra

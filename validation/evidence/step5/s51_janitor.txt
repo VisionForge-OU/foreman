@@ -1,0 +1,3 @@
+janitor issues=['JAN-001', 'JAN-002', 'JAN-003', 'JAN-004'] kinds_run=['dedup', 'docs']
+report.janitor=[('JAN-001', 'dedup', 'done'), ('JAN-002', 'docs', 'done'), ('JAN-003', 'dedup', 'done'), ('JAN-004', 'docs', 'done')]
+verification(janitors)={ JAN-001:True, JAN-002:True, JAN-003:True, JAN-004:True }

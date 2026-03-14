@@ -38,8 +38,11 @@ foreman --demo            # launch the TUI against a throwaway sample repo
 Other commands:
 
 ```bash
-foreman status            # show vendored-skill status + features for the repo
-foreman init --force      # re-create config and reinstall the foreman-* skills
+foreman status            # show vendored-skill + agent status + features for the repo
+foreman init --force      # re-create config and reinstall the foreman-* skills/agents
+foreman build             # resume/continue the autonomous build of a feature
+foreman retro             # cluster recurring failures → gated skill/prompt patch drafts
+foreman bench             # replay the eval set; report success-rate/cost/turn deltas
 foreman --version
 ```
 
@@ -76,27 +79,45 @@ foreman --version
 
 ### Phase B — the autonomous build loop ("Boris loop")
 
-For each ready issue (queued + dependencies done), up to `max_parallel` workers run
-concurrently, each in its **own git worktree**:
+A one-time **initializer** writes `init.sh` + `feature-state.md`. Then, for each
+ready issue (queued + dependencies done) whose declared **`touches`** footprint
+doesn't overlap a running one, up to `max_parallel` workers run concurrently, each
+in its **own git worktree**:
 
-- A `foreman-tdd` worker implements the slice with strict red-green-refactor and
-  emits a machine-readable `FOREMAN-SUMMARY` block.
-- **Foreman re-runs the configured `test`/`lint`/`typecheck` commands itself** and
-  blocks "done" on failure — it never trusts the agent's claim.
-- Pass → commit + merge into the integration branch. Fail → retry with the failing
-  output appended, up to `max_retries`, then **escalate** to the attention queue.
-- Budget breaches (turns / cost / wall-clock), stuck workers, or an agent's own
-  escalation request all route to the attention queue, where you answer and the
-  worker **resumes**.
-- When all issues land and the PRD defines user flows, an **e2e** agent derives and
-  runs end-to-end tests (same independent verification).
+- A `foreman-tdd` worker implements the slice (red-green-refactor), runs tests via
+  the installed **`foreman-test`** wrapper, saves **evidence** under
+  `runs/<id>/evidence/`, updates **`progress.md`**, and emits a `FOREMAN-SUMMARY`.
+- The **merge gate** (Foreman runs it itself, never trusting the agent) requires:
+  the worker's **evidence** is real, the issue's runnable **`acceptance_check`**
+  passes, the full **test/lint/typecheck** pass, and the **regression ratchet** is
+  green (no previously-passing test now fails — bounces name the regressed tests).
+- A read-only **evaluator** (a separate `--agent`, fresh context) then grades the
+  diff on a 1–5 rubric; objections **bounce to a fresh worker** (with a distilled
+  failure report), uncertainty/repeated disagreement **escalate**.
+- Pass → Foreman flips the issue's entry in `verification.json` (workers are
+  **hook-blocked** from writing it), commits + merges. After every N merges a
+  **janitor** pass (dedup / conventions / docs) runs through the same gate.
+- When all issues land, an **e2e** agent runs, then a read-only **auditor** walks
+  the PRD requirement-by-requirement; a divergence drafts a **PRD amendment** that
+  re-enters the hash-sealed review gate.
 
 ### Guardrails (enforced by Foreman, not the agent)
 
 Per-run `max_turns`, `max_cost_usd`, `timeout_min`; per-issue `max_retries`;
-global `max_parallel` and a daily cost ceiling with a hard stop. Cost is taken
-from the stream's `total_cost_usd`; the native `--max-budget-usd` flag is passed as
-a second line of defence. Every enforcement event is logged and surfaced.
+global `max_parallel` and a daily cost ceiling with a hard stop. Workers can't
+write `verification.json` / issue files (a `PreToolUse` deny hook, proven to hold
+under `acceptEdits`); crash-safe per-issue **locks** with heartbeat reclaim prevent
+double-claiming. Every enforcement event is logged and surfaced.
+
+### The evals flywheel
+
+Every run is **outcome-labelled** (`success_first_try | success_after_retry(n) |
+evaluator_bounce | escalated(reason) | …`); the TUI metrics pane (press **m**)
+renders success rate, mean retries/issue, cost/issue, and an escalation histogram.
+`foreman retro` clusters recurring failures and drafts patches to the vendored
+skills / rubric / prompts — drafts that pass the **same hash-sealed review gate** as
+a PRD; **no patch lands without a `foreman bench` report** showing it doesn't
+regress the eval set.
 
 ---
 
@@ -104,28 +125,34 @@ a second line of defence. Every enforcement event is logged and surfaced.
 
 ```
 .foreman/
-  config.yaml
-  daily_cost.json
+  schema_version            # on-disk schema version (2); Phase-1 trees migrate additively
+  config.yaml   daily_cost.json   SKILL_CHANGELOG.md
+  retro/                    # gated skill/prompt patch proposals + bench reports
   features/<slug>/
     request.md  plan.md  adr.md  prd.md  report.md
-    reviews/    plan-v1-review.md ...
-    issues/     ISS-001.md ...
+    feature-state.md  init.sh             # initializer outputs (WS3)
+    verification.json  baseline.json      # Foreman-owned structural-done + ratchet baseline
+    reviews/    plan-v1-review.md  prd-v1-body.md ...
+    issues/     ISS-001.md  ISS-001.check/ ...   # each issue ships a runnable acceptance check
     escalations/ISS-001.md ...
-    runs/<timestamp>-ISS-001/{transcript.jsonl, summary.md, usage.json}
-.claude/skills/
-  foreman-grill-docs/  foreman-to-prd/  foreman-to-issues/  foreman-tdd/
+    runs/<timestamp>-ISS-001/{transcript.jsonl, summary.md, usage.json,
+                              progress.md, verdict.json, evidence/}
+.claude/skills/   foreman-grill-docs/  foreman-to-prd/  foreman-to-issues/  foreman-tdd/
+.claude/agents/   foreman-evaluator.md  foreman-auditor.md  foreman-retro.md
 ```
 
 Document statuses: `drafting → in_review → changes_requested → approved`
 (approval auto-reverts if the body changes). Issue statuses:
-`queued | in_progress | tests_failing | needs_human | done | merged`.
+`queued | in_progress | tests_failing | awaiting_evaluation | needs_human | done | merged`.
 
 ## Configuration (`.foreman/config.yaml`)
 
 See `config.sample.yaml` for the annotated template. Key fields: `model_planner`,
-`model_worker`, `effort`, `required_skills`, `commands` (test/lint/typecheck/e2e),
-`git` (integration branch, merge strategy, open_pr), `limits` (max_parallel,
-max_retries, daily_cost_usd), `run_budget`, `e2e_enabled`, `permission_mode`.
+`model_worker`, `model_evaluator`, `model_auditor`, `effort`, `required_skills`,
+`required_agents`, `commands` (test/lint/typecheck/e2e), `git`, `limits`,
+`run_budget`, `evaluator_*`, `auditor_enabled`, `notify_command`, `retry_strategy`
+(`fresh`|`resume`), `janitor_enabled`/`janitor_every`/`janitor_kinds`,
+`bench_eval_set`/`bench_cost_ceiling_usd`, `e2e_enabled`, `permission_mode`.
 
 ## The vendored skills
 

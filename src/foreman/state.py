@@ -24,16 +24,29 @@ from .models import (
     FeatureState,
     Issue,
     IssueStatus,
+    IssueVerification,
     Phase,
     Review,
     RunRecord,
     DOC_KINDS,
+    ISSUE_KIND_FEATURE,
+    SCHEMA_VERSION,
 )
 from .paths import RepoPaths, slugify
+from .verification import verification_json
 
 
 def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _issue_status(value: object) -> IssueStatus:
+    """Tolerant issue-status parse: an unknown value degrades to QUEUED rather
+    than crashing a load (forward-compat for trees written by a newer Foreman)."""
+    try:
+        return IssueStatus(str(value))
+    except ValueError:
+        return IssueStatus.QUEUED
 
 
 class FileStore:
@@ -42,6 +55,57 @@ class FileStore:
     def __init__(self, repo_root: Path | str, clock: Callable[[], str] = _utcnow_iso):
         self.paths = RepoPaths(repo_root)
         self._clock = clock
+        self._migrated = False
+
+    # ------------------------------------------------------------------ #
+    # Schema version & additive v1→v2 migration (P2.2)
+    # ------------------------------------------------------------------ #
+    def schema_version(self) -> int:
+        """The on-disk schema version. Absent marker ⇒ a Phase-1 (v1) tree."""
+        f = self.paths.schema_version_file
+        if not f.exists():
+            return 1
+        try:
+            return int(f.read_text().strip() or "1")
+        except (ValueError, OSError):
+            return 1
+
+    def _stamp_schema_version(self, version: int = SCHEMA_VERSION) -> None:
+        self.paths.foreman_dir.mkdir(parents=True, exist_ok=True)
+        self.paths.schema_version_file.write_text(f"{version}\n")
+
+    def ensure_migrated(self) -> None:
+        """Idempotently bring a v1 tree up to v2 — purely additive (P2.2).
+
+        Never rewrites or deletes a Phase-1 file. It only: stamps the version and
+        seeds a Default-FAIL ``verification.json`` per feature (already-landed
+        issues seeded ``passes:true`` so the regression ratchet has a baseline).
+        Issue ``kind``/``touches`` default in-memory (feature / unknown-footprint)
+        so old issue files load untouched.
+        """
+        if self._migrated:
+            return
+        if not self.paths.foreman_dir.exists():
+            self._migrated = True
+            return
+        if self.schema_version() >= SCHEMA_VERSION:
+            self._migrated = True
+            return
+        for slug in self.paths.feature_slugs():
+            issues = self._load_issues(slug)
+            if not issues:
+                continue
+            passed = {
+                i.id for i in issues
+                if i.status in (IssueStatus.DONE, IssueStatus.MERGED)
+            }
+            verification_json.seed_missing(
+                self.paths.verification_file(slug),
+                [i.id for i in issues],
+                passed_ids=passed,
+            )
+        self._stamp_schema_version()
+        self._migrated = True
 
     # ------------------------------------------------------------------ #
     # Feature lifecycle
@@ -58,6 +122,9 @@ class FileStore:
         self.paths.request_file(slug).write_text(
             frontmatter.serialize(meta, request_body)
         )
+        # New trees are born at the current schema version (P2.2).
+        if not self.paths.schema_version_file.exists():
+            self._stamp_schema_version()
         return slug
 
     def list_features(self) -> list[str]:
@@ -65,6 +132,7 @@ class FileStore:
 
     def load_feature(self, slug: str) -> FeatureState:
         """Rebuild a feature's full state from disk (R4)."""
+        self.ensure_migrated()
         state = FeatureState(slug=slug)
         req = self.paths.request_file(slug)
         if req.exists():
@@ -76,8 +144,37 @@ class FileStore:
                 state.docs[kind] = gd
         state.issues = self._load_issues(slug)
         state.queue_confirmed = self._queue_confirmed(slug)
+        state.verification = verification_json.read(self.paths.verification_file(slug))
         state.phase = self._derive_phase(state)
         return state
+
+    # ------------------------------------------------------------------ #
+    # Verification map (Foreman-owned structural "done" — P2.2/WS1.2)
+    # ------------------------------------------------------------------ #
+    def verification(self, slug: str) -> dict[str, IssueVerification]:
+        return verification_json.read(self.paths.verification_file(slug))
+
+    def issue_verified(self, slug: str, issue_id: str) -> bool:
+        return self.verification(slug).get(issue_id, IssueVerification()).passes
+
+    def mark_issue_passed(
+        self, slug: str, issue_id: str, *, evidence: list[str], verified_by: str = "foreman"
+    ) -> None:
+        """Flip an issue to structurally-done. The ONLY path to ``passes:true``."""
+        verification_json.set_passed(
+            self.paths.verification_file(slug), issue_id,
+            evidence=evidence, verified_at=self._clock(), verified_by=verified_by,
+        )
+
+    def mark_issue_failed(self, slug: str, issue_id: str) -> None:
+        verification_json.set_failed(self.paths.verification_file(slug), issue_id)
+
+    def seed_verification(self, slug: str) -> None:
+        """Seed Default-FAIL entries for every current issue (idempotent)."""
+        issues = self._load_issues(slug)
+        verification_json.seed_missing(
+            self.paths.verification_file(slug), [i.id for i in issues]
+        )
 
     # ------------------------------------------------------------------ #
     # Gated documents (plan / adr / prd)
@@ -218,13 +315,16 @@ class FileStore:
         return Issue(
             id=str(parsed.get("id")),
             title=str(parsed.get("title", "")),
-            status=IssueStatus(parsed.get("status", IssueStatus.QUEUED.value)),
+            status=_issue_status(parsed.get("status", IssueStatus.QUEUED.value)),
             depends_on=list(parsed.get("depends_on", []) or []),
             branch=str(parsed.get("branch", "")),
             attempts=int(parsed.get("attempts", 0)),
             budget=Budget.from_dict(parsed.get("budget")),
             prd_refs=list(parsed.get("prd_refs", []) or []),
             body=parsed.body,
+            acceptance_check=str(parsed.get("acceptance_check", "") or ""),
+            touches=list(parsed.get("touches", []) or []),
+            kind=str(parsed.get("kind", ISSUE_KIND_FEATURE) or ISSUE_KIND_FEATURE),
         )
 
     def write_issue(self, slug: str, issue: Issue) -> None:

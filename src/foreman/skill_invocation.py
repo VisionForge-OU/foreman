@@ -104,6 +104,7 @@ class SkillInvocation:
         conventions: str = "",
         failing_output: Optional[str] = None,
         reviewer_answer: Optional[str] = None,
+        evidence_dir: Optional[Path] = None,
     ) -> str:
         cmd_lines = "\n".join(
             f"  {name}: {cmd or '(not configured — skip)'}"
@@ -115,9 +116,28 @@ class SkillInvocation:
             use_skill("foreman-tdd"),
             "",
             "Implement EXACTLY this one issue as a single vertical slice using "
-            "strict red-green-refactor. Use these commands (and only these) for "
-            f"verification:\n{cmd_lines}\n",
-            "End your run with the required FOREMAN-SUMMARY json block.",
+            "strict red-green-refactor. Run tests with the `foreman-test` wrapper "
+            "(on your PATH) — never the raw runner; it keeps output small and "
+            "supports `--fast` for inner-loop runs. The project's commands are:\n"
+            f"{cmd_lines}\n",
+        ]
+        if issue.acceptance_check:
+            parts.append(
+                "This issue's acceptance check (Foreman re-runs it independently — "
+                f"make it pass): {issue.acceptance_check}\n"
+            )
+        if evidence_dir is not None:
+            parts.append(
+                "COMPLETION CONTRACT: before claiming done you MUST save evidence "
+                f"artifacts (the test log, command outputs) into: {evidence_dir}\n"
+                "List each saved artifact in the FOREMAN-SUMMARY `evidence` array. "
+                "A 'complete' claim with missing or empty evidence is rejected and "
+                "counts as a failed attempt. You may NOT write verification.json or "
+                "any issue file — Foreman owns those (a hook will block you).\n"
+            )
+        parts += [
+            "End your run with the required FOREMAN-SUMMARY json block (now "
+            "including the `evidence` array).",
             "",
             f"--- ISSUE {issue.id}: {issue.title} ---",
             issue.body,

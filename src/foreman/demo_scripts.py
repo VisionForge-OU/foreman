@@ -11,6 +11,7 @@ Used by ``foreman demo`` and by the pipeline/scheduler tests.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import AsyncIterator
 
 from .backend import RunSpec
@@ -135,6 +136,9 @@ branch: feature/todo-done/iss-001
 attempts: 0
 budget: { max_turns: 40, max_cost_usd: 2.0, timeout_min: 20 }
 prd_refs: ["PRD §Implementation Decisions", "Story #1"]
+acceptance_check: tests/test_store.py
+touches: ["todo/store.py", "tests/test_store.py"]
+kind: feature
 ---
 ## Goal
 Add a `mark_done(item_id)` function to the store that sets an item's completed
@@ -158,6 +162,9 @@ branch: feature/todo-done/iss-002
 attempts: 0
 budget: { max_turns: 40, max_cost_usd: 2.0, timeout_min: 20 }
 prd_refs: ["PRD §User Flows", "Story #1"]
+acceptance_check: tests/test_cli.py
+touches: ["todo/cli.py", "tests/test_cli.py"]
+kind: feature
 ---
 ## Goal
 Dispatch `done <id>` from the CLI to the store's mark_done and report success.
@@ -173,6 +180,25 @@ Dispatch `done <id>` from the CLI to the store's mark_done and report success.
 # --------------------------------------------------------------------------- #
 # Scripts
 # --------------------------------------------------------------------------- #
+async def initializer_script(spec: RunSpec) -> AsyncIterator[StreamEvent]:
+    """Mock one-time feature initializer (WS3.1): writes init.sh + feature-state.md."""
+    import re
+    paths = RepoPaths(spec.repo_root)
+    yield _init(spec)
+    yield _assistant(text="Bootstrapping the feature environment.")
+    init_path = paths.init_script(spec.slug)
+    fs_path = paths.feature_state_file(spec.slug)
+    init_path.parent.mkdir(parents=True, exist_ok=True)
+    init_path.write_text("#!/usr/bin/env bash\n# demo bootstrap\nset -e\nexit 0\n")
+    fs_path.write_text(
+        "# Feature state\n\n## Status\nReady to build.\n\n"
+        "## Conventions\nSmall, deeply-tested vertical slices.\n\n"
+        "## Gotchas\nUnknown ids must error cleanly.\n"
+    )
+    yield _assistant(tool=("Write", {"file_path": "init.sh"}), text="Wrote init.sh + feature-state.md.")
+    yield _result(cost=0.02, turns=2)
+
+
 async def planner_script(spec: RunSpec) -> AsyncIterator[StreamEvent]:
     paths = RepoPaths(spec.repo_root)
     yield _init(spec)
@@ -297,7 +323,35 @@ def _write_worker_code(spec: RunSpec, files: dict) -> list[str]:
     return written
 
 
-def _summary_block(issue_id: str, files: list[str], passed: bool) -> str:
+def _evidence_dir_from_prompt(spec: RunSpec):
+    """Foreman names the run's evidence dir in the prompt; extract it (WS1.3)."""
+    import re
+    m = re.search(r"(\S*/runs/\S+/evidence)", spec.prompt)
+    return Path(m.group(1)) if m else None
+
+
+def _write_evidence(spec: RunSpec, *, passed: bool = True) -> list[str]:
+    """Mimic a worker saving a test-log evidence artifact under runs/<id>/evidence/."""
+    ed = _evidence_dir_from_prompt(spec)
+    if ed is None:
+        return []
+    ed.mkdir(parents=True, exist_ok=True)
+    (ed / "test.log").write_text("1 passed" if passed else "1 failed")
+    return ["test.log"]
+
+
+def _write_progress(spec: RunSpec, text: str = "Implemented the slice; tests green.") -> None:
+    """Mimic a worker writing its mandatory progress.md handoff (WS3.2)."""
+    ed = _evidence_dir_from_prompt(spec)
+    if ed is None:
+        return
+    progress = ed.parent / "progress.md"
+    progress.parent.mkdir(parents=True, exist_ok=True)
+    progress.write_text(f"# Progress\n\n{text}\n\n## Remaining\n- none\n")
+
+
+def _summary_block(issue_id: str, files: list[str], passed: bool,
+                   evidence: list[str] | None = None) -> str:
     import json
     obj = {
         "schema": "foreman-summary/v1",
@@ -311,6 +365,7 @@ def _summary_block(issue_id: str, files: list[str], passed: bool) -> str:
         "open_concerns": [],
         "escalate": False,
         "escalation_question": "",
+        "evidence": evidence or [],
     }
     return "```json\n" + json.dumps(obj, indent=2) + "\n```"
 
@@ -322,7 +377,8 @@ def make_tdd_script(*, fail_first: bool = False):
     async def script(spec: RunSpec) -> AsyncIterator[StreamEvent]:
         issue_id = spec.label
         files = dict(WORKER_CODE.get(issue_id, {}))
-        is_retry = "PREVIOUS ATTEMPT FAILED" in spec.prompt
+        is_retry = ("distilled failure report" in spec.prompt
+                    or "PRIOR ATTEMPT FAILED" in spec.prompt)
         yield _init(spec)
         yield _assistant(text=f"Implementing {issue_id} with red-green-refactor.")
         if fail_first and not is_retry:
@@ -332,13 +388,17 @@ def make_tdd_script(*, fail_first: bool = False):
             if first_test:
                 broken[first_test] = broken[first_test] + "\n\ndef test_intentionally_broken():\n    assert False\n"
             written = _write_worker_code(spec, broken)
-            yield _assistant(tool=("Bash", {"command": "pytest"}), text="Tests written.")
-            yield _assistant(text=_summary_block(issue_id, written, passed=True))  # agent lies
+            ev = _write_evidence(spec, passed=False)
+            _write_progress(spec, "Wrote a (broken) test; needs a fix.")
+            yield _assistant(tool=("Bash", {"command": "foreman-test"}), text="Tests written.")
+            yield _assistant(text=_summary_block(issue_id, written, passed=True, evidence=ev))  # agent lies
             yield _result(cost=0.10, turns=4, result="")
             return
         written = _write_worker_code(spec, files)
-        yield _assistant(tool=("Bash", {"command": "pytest"}), text="Green.")
-        yield _assistant(text=_summary_block(issue_id, written, passed=True))
+        ev = _write_evidence(spec, passed=True)
+        _write_progress(spec, "Implemented the slice; tests green.")
+        yield _assistant(tool=("Bash", {"command": "foreman-test"}), text="Green.")
+        yield _assistant(text=_summary_block(issue_id, written, passed=True, evidence=ev))
         yield _result(cost=0.12, turns=5, result="")
 
     return script
@@ -360,24 +420,91 @@ def test_user_can_mark_a_todo_done_end_to_end():
 '''
 
 
+def _verdict_block(issue_id: str, *, verdict="pass", objections=None, scores=5) -> str:
+    import json
+    obj = {
+        "schema": "foreman-verdict/v1",
+        "issue_id": issue_id,
+        "verdict": verdict,
+        "scores": {dim: {"score": scores, "justification": f"{dim} looks good"}
+                   for dim in ("functionality", "prd_fidelity", "craft", "test_honesty")},
+        "objections": objections or [],
+        "summary": "demo evaluator verdict",
+    }
+    return "```json\n" + json.dumps(obj, indent=2) + "\n```"
+
+
+def make_evaluator_script(*, verdict="pass", objections=None, scores=5):
+    """A mock read-only evaluator. Defaults to a passing verdict."""
+    async def script(spec: RunSpec) -> AsyncIterator[StreamEvent]:
+        issue_id = spec.label.replace("-eval", "")
+        yield _init(spec)
+        yield _assistant(text="Grading the slice against acceptance criteria + PRD.")
+        yield _assistant(text=_verdict_block(issue_id, verdict=verdict,
+                                             objections=objections, scores=scores))
+        yield _result(cost=0.01, turns=2)
+    return script
+
+
+async def janitor_script(spec: RunSpec) -> AsyncIterator[StreamEvent]:
+    """Mock specialist janitor (WS4.3): a tiny behaviour-preserving change + handoff."""
+    yield _init(spec)
+    yield _assistant(text=f"Janitor {spec.label}: small, behaviour-preserving cleanup.")
+    # A unique-per-janitor doc note so sequential janitor merges never collide.
+    (spec.cwd / f"JANITOR_{spec.label}.md").write_text(f"Janitor {spec.label} pass notes.\n")
+    _write_progress(spec, "Janitor pass complete; suite still green.")
+    yield _assistant(tool=("Bash", {"command": "foreman-test"}), text="Suite still green.")
+    yield _assistant(text=_summary_block(spec.label, [f"JANITOR_{spec.label}.md"],
+                                         passed=True, evidence=[]))
+    yield _result(cost=0.03, turns=2)
+
+
+def _audit_block(requirements=None) -> str:
+    import json
+    obj = {
+        "schema": "foreman-audit/v1",
+        "requirements": requirements or [
+            {"requirement": "User can mark a todo done", "status": "satisfied",
+             "evidence": "tests/test_e2e_flow.py", "note": ""},
+        ],
+        "summary": "demo audit — implementation matches the PRD",
+    }
+    return "```json\n" + json.dumps(obj, indent=2) + "\n```"
+
+
+def make_auditor_script(*, requirements=None):
+    """Mock read-only spec-integrity auditor (WS5.1). Defaults to all-satisfied."""
+    async def script(spec: RunSpec) -> AsyncIterator[StreamEvent]:
+        yield _init(spec)
+        yield _assistant(text="Auditing the merged feature against the approved PRD.")
+        yield _assistant(text=_audit_block(requirements))
+        yield _result(cost=0.01, turns=2)
+    return script
+
+
 async def e2e_script(spec: RunSpec) -> AsyncIterator[StreamEvent]:
     yield _init(spec)
     yield _assistant(text="Deriving e2e tests from the PRD user flows.")
     dest = spec.cwd / "tests" / "test_e2e_flow.py"
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text(E2E_TEST)
+    ev = _write_evidence(spec, passed=True)
     yield _assistant(tool=("Write", {"file_path": "tests/test_e2e_flow.py"}), text="Wrote e2e test.")
-    yield _assistant(text=_summary_block("e2e", ["tests/test_e2e_flow.py"], passed=True))
+    yield _assistant(text=_summary_block("e2e", ["tests/test_e2e_flow.py"], passed=True, evidence=ev))
     yield _result(cost=0.07, turns=3)
 
 
 def demo_scripts(*, fail_first_issue: str | None = None) -> dict:
     """The default registry for the demo. Optionally make one issue fail first."""
     scripts = {
+        "initializer": initializer_script,
         "planner": planner_script,
         "grill": grill_script,
         "slicer": slicer_script,
         "tdd": make_tdd_script(fail_first=False),
+        "janitor": janitor_script,
+        "evaluator": make_evaluator_script(verdict="pass"),
+        "auditor": make_auditor_script(),
         "e2e": e2e_script,
     }
     if fail_first_issue:

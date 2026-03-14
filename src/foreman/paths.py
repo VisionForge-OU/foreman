@@ -42,9 +42,34 @@ class RepoPaths:
         return self.root / ".claude" / "skills"
 
     @property
+    def agents_install_dir(self) -> Path:
+        """Where Foreman installs its read-only agent files (evaluator/auditor)."""
+        return self.root / ".claude" / "agents"
+
+    @property
     def daily_cost_file(self) -> Path:
         """Tracks accumulated spend per UTC day for the global ceiling (R5/§9)."""
         return self.foreman_dir / "daily_cost.json"
+
+    @property
+    def schema_version_file(self) -> Path:
+        """On-disk schema version marker (P2.2). Absent ⇒ a Phase-1 (v1) tree."""
+        return self.foreman_dir / "schema_version"
+
+    @property
+    def retro_dir(self) -> Path:
+        """Where `foreman retro` drafts gated skill/rubric/prompt patch proposals (WS6.2)."""
+        return self.foreman_dir / "retro"
+
+    def retro_proposal_file(self, name: str) -> Path:
+        return self.retro_dir / f"{name}.md"
+
+    def retro_bench_file(self, name: str) -> Path:
+        return self.retro_dir / f"{name}.bench.json"
+
+    @property
+    def skill_changelog_file(self) -> Path:
+        return self.foreman_dir / "SKILL_CHANGELOG.md"
 
     def is_initialized(self) -> bool:
         return self.config_file.exists()
@@ -76,6 +101,27 @@ class RepoPaths:
     def issue_file(self, slug: str, issue_id: str) -> Path:
         return self.issues_dir(slug) / f"{issue_id}.md"
 
+    def issue_check_dir(self, slug: str, issue_id: str) -> Path:
+        """Holds an issue's runnable acceptance check (test file/script) — WS1.1."""
+        return self.issues_dir(slug) / f"{issue_id}.check"
+
+    # --- Phase-2 structural verification (P2.2) ---
+    def verification_file(self, slug: str) -> Path:
+        """Foreman-owned structural-done map. Workers are hook-blocked from writing it."""
+        return self.feature_dir(slug) / "verification.json"
+
+    def baseline_file(self, slug: str) -> Path:
+        """Regression-ratchet baseline: the set of passing tests after each merge (WS1.4)."""
+        return self.feature_dir(slug) / "baseline.json"
+
+    def feature_state_file(self, slug: str) -> Path:
+        """Initializer-seeded digest: status + conventions + gotchas (WS3.1)."""
+        return self.feature_dir(slug) / "feature-state.md"
+
+    def init_script(self, slug: str) -> Path:
+        """Environment bootstrap any session runs first (WS3.1)."""
+        return self.feature_dir(slug) / "init.sh"
+
     def escalations_dir(self, slug: str) -> Path:
         return self.feature_dir(slug) / "escalations"
 
@@ -99,3 +145,19 @@ class RepoPaths:
 
     def run_usage(self, slug: str, run_id: str) -> Path:
         return self.run_dir(slug, run_id) / "usage.json"
+
+    def run_evidence_dir(self, slug: str, run_id: str) -> Path:
+        """Where a worker saves evidence artifacts (logs/screenshots) — WS1.3."""
+        return self.run_dir(slug, run_id) / "evidence"
+
+    def run_progress(self, slug: str, run_id: str) -> Path:
+        """Mandatory per-session handoff: what was done / remains / dead ends (WS3.2)."""
+        return self.run_dir(slug, run_id) / "progress.md"
+
+    def run_verdict(self, slug: str, run_id: str) -> Path:
+        """Stored evaluator verdict for a run (WS2.4)."""
+        return self.run_dir(slug, run_id) / "verdict.json"
+
+    def run_audit(self, slug: str, run_id: str) -> Path:
+        """Stored spec-integrity audit report for a run (WS5.1)."""
+        return self.run_dir(slug, run_id) / "audit.json"
