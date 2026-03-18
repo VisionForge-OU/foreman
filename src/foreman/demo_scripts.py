@@ -203,10 +203,11 @@ async def planner_script(spec: RunSpec) -> AsyncIterator[StreamEvent]:
     paths = RepoPaths(spec.repo_root)
     yield _init(spec)
     yield _assistant(text="Exploring the repo and drafting a plan.")
-    path = paths.doc_file(spec.slug, "plan")
+    # Mirror the real agent contract: write to the Foreman draft path, not canonical.
+    path = paths.doc_draft_file(spec.slug, "plan")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(PLAN_BODY)
-    yield _assistant(tool=("Write", {"file_path": str(path)}), text="Wrote plan.md.")
+    yield _assistant(tool=("Write", {"file_path": str(path)}), text="Wrote the plan draft.")
     yield _result(cost=0.06, turns=2)
 
 
@@ -215,12 +216,16 @@ async def grill_script(spec: RunSpec) -> AsyncIterator[StreamEvent]:
     revising = "REVIEWER COMMENTS" in spec.prompt
     yield _init(spec)
     yield _assistant(text="Grilling the plan against the codebase.")
-    paths.doc_file(spec.slug, "adr").write_text(ADR_BODY)
+    # Mirror the real agent contract: write to the Foreman draft paths, not canonical.
+    adr_draft = paths.doc_draft_file(spec.slug, "adr")
+    prd_draft = paths.doc_draft_file(spec.slug, "prd")
+    adr_draft.parent.mkdir(parents=True, exist_ok=True)
+    adr_draft.write_text(ADR_BODY)
     prd_body = PRD_BODY_V2 if revising else PRD_BODY_V1
     if revising:
         prd_body = prd_body + "\n## Changelog\n\n- v2: resolved the re-completion question (no-op).\n"
-    paths.doc_file(spec.slug, "prd").write_text(prd_body)
-    yield _assistant(tool=("Write", {"file_path": "adr.md"}), text="Wrote adr.md and prd.md.")
+    prd_draft.write_text(prd_body)
+    yield _assistant(tool=("Write", {"file_path": str(adr_draft)}), text="Wrote ADR and PRD drafts.")
     yield _result(cost=0.08, turns=3)
 
 

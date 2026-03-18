@@ -384,6 +384,27 @@ async def test_stale_lock_is_reclaimed_and_build_proceeds(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_orphaned_in_progress_issue_recovered_after_restart(tmp_path):
+    """R4 crash recovery: an issue left IN_PROGRESS by a dead run (e.g. SIGKILL) is
+    requeued and finished on restart, not silently stalled. Its fresh-heartbeat lock
+    from the dead worker is dropped too."""
+    import time
+    from foreman import locks
+    repo, store, slug = await _prepare_feature(tmp_path)
+    # Simulate a crash mid-ISS-001: status stuck IN_PROGRESS + a dead worker's lock
+    # whose heartbeat is recent (so the stale-TTL reclaim alone would NOT free it).
+    store.update_issue_status(slug, "ISS-001", IssueStatus.IN_PROGRESS)
+    sched = _scheduler(store, _config())
+    await sched.worktrees.ensure_base()
+    integ = await sched.worktrees.integration_worktree()
+    locks.acquire(integ, "ISS-001", run_id="dead-worker", now=time.time())
+    report = await sched.build(slug)
+    assert set(report.merged) == {"ISS-001", "ISS-002"}  # recovered, then both built
+    assert store.load_issue(slug, "ISS-001").status == IssueStatus.MERGED
+    assert locks.active(integ) == {}  # dead worker's lock released
+
+
+@pytest.mark.asyncio
 async def test_live_foreign_lock_blocks_without_spinning(tmp_path):
     """WS4.2: a live foreign lock blocks an issue (no infinite re-dispatch)."""
     from foreman import locks

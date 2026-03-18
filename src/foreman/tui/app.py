@@ -192,7 +192,7 @@ class WorkerScreen(Screen):
         lv.clear()
         for iid in ids:
             w = workers[iid]
-            lv.append(ListItem(Label(f"{iid} [{w.status}] ${w.cost:.3f} {w.turns}t")))
+            lv.append(ListItem(Label(f"{iid} [{w.status}] ${w.cost:.3f} {w.turns}t"), name=iid))
         body = self.query_one("#logbody", Static)
         if self.selected and self.selected in workers:
             w = workers[self.selected]
@@ -205,8 +205,9 @@ class WorkerScreen(Screen):
         return f"[b]{iid}[/b]  status={w.status}  cost=${w.cost:.4f}  turns={w.turns}\n" + ("─" * 40)
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
-        label = event.item.query_one(Label).renderable
-        self.selected = str(label).split(" ")[0]
+        if event.item is None:
+            return
+        self.selected = event.item.name
         self.refresh_workers()
 
     def action_next_worker(self) -> None:
@@ -260,7 +261,7 @@ class AttentionScreen(Screen):
         lv = self.query_one("#elist", ListView)
         lv.clear()
         for iid, reason in escs:
-            lv.append(ListItem(Label(f"{iid}: {reason[:60]}")))
+            lv.append(ListItem(Label(f"{iid}: {reason[:60]}"), name=iid))
         if escs and self.selected is None:
             self.selected = escs[0][0]
         self._show_detail()
@@ -274,8 +275,9 @@ class AttentionScreen(Screen):
         detail.update(path.read_text() if path.exists() else f"{self.selected}: (no detail)")
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
-        label = str(event.item.query_one(Label).renderable)
-        self.selected = label.split(":")[0]
+        if event.item is None:
+            return
+        self.selected = event.item.name
         self._show_detail()
 
     def action_next(self) -> None:
@@ -373,6 +375,7 @@ class DashboardScreen(Screen):
     #board { height: 1fr; }
     #hint { color: $accent; padding: 1 1; }
     #glog { height: 8; border-top: solid $accent; }
+    #statusbar { height: 1; background: $boost; color: $text; padding: 0 1; }
     """
 
     def compose(self) -> ComposeResult:
@@ -387,23 +390,44 @@ class DashboardScreen(Screen):
                 yield Static(id="board")
                 with VerticalScroll(id="glog"):
                     yield Static(id="glogbody")
+        yield Static(id="statusbar")   # persistent "what's happening now" line
         yield Footer()
 
     def on_mount(self) -> None:
+        self._tick = 0
         self._build_feature_list()
+        self.set_interval(0.2, self.refresh_status)  # fast tick → live spinner
         self.set_interval(0.4, self.refresh_data)
         self.refresh_data()
+        self.refresh_status()
+
+    # The status line ticks faster than the heavy data refresh so the spinner
+    # animates smoothly and activity feels alive even mid-agent-run.
+    def refresh_status(self) -> None:
+        self._tick += 1
+        c = self.app.controller
+        sb = self.query_one("#statusbar", Static)
+        spin = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+        act = c.activity
+        if act is not None and act.running:
+            ch = spin[self._tick % len(spin)]
+            sb.update(f"[b green]{ch} ACTIVE[/]  {c.status_line()}")
+        else:
+            last = c.global_log[-1] if c.global_log else "no activity yet — pick an action below"
+            sb.update(f"[dim]● idle[/dim]  {last}")
 
     def _build_feature_list(self) -> None:
         lv = self.query_one("#flist", ListView)
         lv.clear()
         for slug in self.app.controller.features():
-            lv.append(ListItem(Label(slug)))
+            lv.append(ListItem(Label(slug), name=slug))
         if self.app.current_slug is None and self.app.controller.features():
             self.app.current_slug = self.app.controller.features()[0]
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
-        self.app.current_slug = str(event.item.query_one(Label).renderable)
+        if event.item is None:
+            return
+        self.app.current_slug = event.item.name
         self.refresh_data()
 
     def refresh_data(self) -> None:

@@ -89,6 +89,12 @@ class RepoPaths:
     def doc_file(self, slug: str, kind: str) -> Path:
         return self.feature_dir(slug) / f"{kind}.md"
 
+    def doc_draft_file(self, slug: str, kind: str) -> Path:
+        """Scratch path a document-producing agent writes to. Foreman reads this and
+        stamps the canonical ``doc_file`` itself, so the agent never touches the
+        version-of-record (it can't corrupt frontmatter or be seen mid-write)."""
+        return self.feature_dir(slug) / "drafts" / f"{kind}.md"
+
     def reviews_dir(self, slug: str) -> Path:
         return self.feature_dir(slug) / "reviews"
 

@@ -49,6 +49,25 @@ def _issue_status(value: object) -> IssueStatus:
         return IssueStatus.QUEUED
 
 
+def _doc_status(value: object) -> DocStatus:
+    """Tolerant doc-status parse (R4). A document-producing agent can transiently
+    write its OWN frontmatter (e.g. ``status: draft``) before Foreman re-stamps the
+    canonical status, and the TUI reads doc files on an interval — possibly mid-write.
+    Never crash the load: an unknown value degrades to DRAFTING (a non-approved state),
+    so a malformed/in-flight file can never read as approved or stall the whole UI."""
+    try:
+        return DocStatus(str(value).strip().lower())
+    except ValueError:
+        return DocStatus.DRAFTING
+
+
+def _safe_int(value: object, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 class FileStore:
     """Reads/writes the ``.foreman/`` tree for a single target repo."""
 
@@ -184,8 +203,8 @@ class FileStore:
         if not path.exists():
             return None
         parsed = frontmatter.parse(path.read_text())
-        version = int(parsed.get("version", 1))
-        status = DocStatus(parsed.get("status", DocStatus.DRAFTING.value))
+        version = _safe_int(parsed.get("version", 1), 1)
+        status = _doc_status(parsed.get("status", DocStatus.DRAFTING.value))
         approval = Approval.from_dict(parsed.get("approval"))
 
         gd = GatedDoc(

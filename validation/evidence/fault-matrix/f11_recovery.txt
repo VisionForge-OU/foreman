@@ -4,14 +4,14 @@
 >>> after crash: verification.passes={'ISS-001': True, 'ISS-002': False}
 >>> after crash: ISS-001 build run dirs=['s0003-ISS-001']
 >>> restarting build in a fresh process (disk-based recovery)…
-RESUME-STATUSES {'ISS-001': 'merged', 'ISS-002': 'in_progress'}
-RESUME-MERGED ['ISS-001']
+RESUME-STATUSES {'ISS-001': 'merged', 'ISS-002': 'merged'}
+RESUME-MERGED ['ISS-001', 'ISS-002']
 
 === F11 FINDINGS ===
 crash SIGKILL delivered .................. True
 state-of-record recovered from disk ...... True (ISS-001 stayed 'merged')
 no duplicate merge / no rebuild of ISS-001  True (run dirs before=['s0003-ISS-001'] after=['s0003-ISS-001'])
-interrupted ISS-002 reconciled & finished  False (final status=in_progress)
+interrupted ISS-002 reconciled & finished  True (final status=merged)
 
 F11 ESSENTIALS (disk recovery, no dup merge): PASS
-F11 RECONCILE interrupted worker: FAIL
+F11 RECONCILE interrupted worker: PASS

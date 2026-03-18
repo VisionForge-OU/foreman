@@ -136,14 +136,19 @@ class Pipeline:
         existing = state.doc("plan")
         target_version = (existing.version + 1) if existing else 1
 
-        plan_path = self.store.paths.doc_file(slug, "plan")
-        prompt = SkillInvocation.planner(state.request, slug, plan_path)
+        # The agent writes to a Foreman-owned DRAFT path, never the canonical plan.md,
+        # so the version-of-record can't be corrupted or read mid-write (it stays at
+        # the prior approved/in-review version until Foreman re-stamps below).
+        draft_path = self.store.paths.doc_draft_file(slug, "plan")
+        draft_path.parent.mkdir(parents=True, exist_ok=True)
+        draft_path.unlink(missing_ok=True)  # never read a previous run's draft
+        prompt = SkillInvocation.planner(state.request, slug, draft_path)
         ctx = SpawnContext(
             kind="planner", label="planner", prompt=prompt,
             cwd=self.store.paths.root, model=self.config.model_planner, extra_dirs=[],
         )
         result = await self._spawn(slug, ctx)
-        body = self._read_agent_body(plan_path, result.final_text)
+        body = self._read_agent_body(draft_path, result.final_text)
         if not body:
             raise PipelineError(f"planner produced no plan content ({self._run_note(result)})")
         return self.store.write_doc(
@@ -160,8 +165,13 @@ class Pipeline:
         if plan is None or plan.status != DocStatus.APPROVED:
             raise PipelineError("cannot grill: plan is not approved")
 
-        adr_path = self.store.paths.doc_file(slug, "adr")
-        prd_path = self.store.paths.doc_file(slug, "prd")
+        # Agents write to Foreman-owned DRAFT paths, never the canonical adr.md/prd.md,
+        # so the version-of-record is never corrupted or read mid-write.
+        adr_path = self.store.paths.doc_draft_file(slug, "adr")
+        prd_path = self.store.paths.doc_draft_file(slug, "prd")
+        adr_path.parent.mkdir(parents=True, exist_ok=True)
+        adr_path.unlink(missing_ok=True)
+        prd_path.unlink(missing_ok=True)
 
         # Gather reviewer comments + previous bodies for a revision pass.
         review_comments: dict[str, str] = {}

@@ -16,23 +16,29 @@ Each entry: repro, expected, actual, severity, fix-forward (if any).
   but it diverges from the prompt's literal expectation. Verified location via code map (hooks/installer.py).
 - **Severity:** minor (documentation/expectation mismatch, not a defect).
 
-### D2 — `foreman init` auto-detects `typecheck: mypy .` even when mypy is not a dependency — minor
-- **Repro:** init on a FastAPI project with no mypy installed → config gets `typecheck: "mypy ."`.
+### D2 — `foreman init` auto-detects `typecheck: mypy .` even when mypy is not a dependency — minor — **FIXED**
+- **Repro:** init on a FastAPI project with no mypy installed → config got `typecheck: "mypy ."`.
 - **Impact:** Foreman's own verify step would invoke `mypy .` and fail (command-not-found / type errors)
   on a project that never opted into type-checking, potentially blocking every merge.
-- **Fix-forward applied:** Set `typecheck: null` and `e2e: null` in notesapi config (no mypy/playwright present).
-- **Severity:** minor (sensible-default overreach; easily overridden).
+- **Fix applied (`installer.py`):** `_detect_commands` now gates every guessed command on `_tool_available`
+  (`shutil.which(exe)`, plus for `npm|yarn|pnpm run <script>` that the script is declared in `package.json`).
+  An uninstalled tool is left blank instead of guessed. Regression tests added (`test_installer.py`).
+- **Caveat:** in environments with universal shims (e.g. pyenv creates `~/.pyenv/shims/mypy` even when
+  mypy isn't installed in the active version), `which()` still resolves, so the guess survives. Acceptable —
+  the user edits config regardless; the fix is a strict improvement everywhere else.
+- **Also:** notesapi config still pins `typecheck: null`, `e2e: null` (cost control for this exercise).
+- **Severity:** minor (sensible-default overreach).
 
-### D3 — `foreman run` halts with exit code 0 on a missing-skill refusal — minor/dx
-- **Repro:** delete a required skill, `foreman run ... ` → prints `halted: required skills missing: foreman-tdd` but `echo $?` == 0.
-- **Expected:** a halted pipeline start should exit non-zero so CI/automation can detect the refusal.
-- **Severity:** minor (dx) — gate works and is visible; only the exit code is wrong for scripting.
+### ~~D3 — `foreman run` halts with exit code 0 on a missing-skill refusal~~ — **RETRACTED (false finding)**
+- Original claim was a **measurement error**: the Step 2 probe read `$?` *after a pipe to `tail`*, capturing
+  tail's exit, not foreman's. Re-measured directly: `foreman run` on a missing-skill halt **exits 2**
+  (`_cmd_run` raises `HeadlessError` → `return 2`, propagated via `sys.exit(main())`). No bug. No code change.
 
 ---
 
 ## Bugs
 
-### B1 — Crash recovery does not reconcile an orphaned `in_progress` issue (F11) — major
+### B1 — Crash recovery does not reconcile an orphaned `in_progress` issue (F11) — major — **FIXED**
 - **Repro:** `~/foreman-validation/harness/run_f11.py` — prepare a 2-issue feature (ISS-002 depends on
   ISS-001), build with ISS-002's worker blocked; once ISS-001 is fully **merged** on disk, `SIGKILL -9`
   the whole process group (worker ISS-002 in flight). Restart with a fresh process: `foreman build` equivalent.
@@ -46,10 +52,16 @@ Each entry: repro, expected, actual, severity, fix-forward (if any).
     not a hard crash. Result: `foreman build` returns immediately having done nothing; the feature silently stalls.
 - **Severity:** **major** (recovery is *incomplete* — a human must manually reset the issue’s status to resume).
   NOT a gate-integrity / data-corruption / duplicate-merge blocker: the safety-critical recovery properties hold.
-- **Suggested fix:** on `build()` start, reconcile any `IN_PROGRESS` issue with no live lock back to `QUEUED`
-  (and clean its worktree), mirroring the §7 user-kill rollback. The stale-lock TTL (900s) also prevents
-  *immediate* restart from reclaiming a dead worker’s fresh-heartbeat lock — a related second-order limitation.
-- **Fix-forward applied:** none (out of scope for this validation; logged for the team).
+- **Fix applied (`scheduler.py`):** `build()` now calls `_reconcile_orphans(slug, integ)` right after the
+  stale-lock reclaim. Since no worker is running in the fresh process yet, any issue resting in a mid-flight
+  status (`IN_PROGRESS`, `TESTS_FAILING`, `AWAITING_EVALUATION`) is a crash orphan: it is reset to `QUEUED`
+  (attempt count preserved, so the retry ceiling still applies) and its dead worker's lock is released. The
+  re-dispatch forks a fresh worktree (`worktree.create_issue_worktree` cleans up), so no partial state leaks.
+- **Verified:** `run_f11.py` now reports `RECONCILE interrupted worker: PASS` — after SIGKILL, ISS-002 is
+  requeued and finishes (`merged`), ISS-001 stays `merged` with **no rebuild / no duplicate merge**. New
+  regression test `test_orphaned_in_progress_issue_recovered_after_restart` (full suite: 237 passed).
+- **Note:** this also resolves the related stale-lock concern — the orphan's fresh-heartbeat lock is force-released
+  on reconcile rather than waiting out the 900s TTL.
 
 ## Methodology notes (harness artifacts, NOT Foreman bugs)
 - **F5 first run** showed `regressed=[]` because the harness wrote the passing and broken `test_a.py`

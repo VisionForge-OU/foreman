@@ -81,24 +81,56 @@ janitor_kinds: [dedup, conventions, docs]
 """
 
 
+def _tool_available(command: str, root: Path) -> bool:
+    """Is the command actually runnable here? Guards against guessing a tool the
+    project doesn't have (e.g. ``mypy`` on a project that never installed it),
+    which would otherwise make Foreman's own verify step fail every merge."""
+    import shutil
+
+    parts = command.split()
+    if not parts:
+        return False
+    exe = parts[0]
+    if shutil.which(exe) is None:
+        return False
+    # `npm|yarn|pnpm run <script>`: only keep it if the script is actually declared.
+    if exe in ("npm", "yarn", "pnpm") and len(parts) >= 3 and parts[1] == "run":
+        import json
+
+        try:
+            scripts = (json.loads((root / "package.json").read_text()).get("scripts") or {})
+        except (OSError, ValueError):
+            return False
+        return parts[2] in scripts
+    return True
+
+
 def _detect_commands(repo_root: Path) -> dict[str, str]:
-    """Best-effort guess of test/lint/typecheck/e2e for the project's stack."""
+    """Best-effort guess of test/lint/typecheck/e2e for the project's stack.
+
+    Only commands whose underlying tool is actually installed are kept; the rest
+    are left blank for the user to fill in, so a guessed-but-absent tool never
+    silently blocks every merge.
+    """
     root = Path(repo_root)
     if (root / "package.json").exists():
-        return {
+        guess = {
             "test": "npm test", "lint": "npm run lint",
             "typecheck": "npm run typecheck", "e2e": "npx playwright test",
         }
-    if (root / "pyproject.toml").exists() or (root / "setup.py").exists():
-        return {
+    elif (root / "pyproject.toml").exists() or (root / "setup.py").exists():
+        guess = {
             "test": "pytest", "lint": "ruff check .",
             "typecheck": "mypy .", "e2e": "pytest -m e2e",
         }
-    if (root / "go.mod").exists():
-        return {"test": "go test ./...", "lint": "go vet ./...", "typecheck": "", "e2e": ""}
-    if (root / "Cargo.toml").exists():
-        return {"test": "cargo test", "lint": "cargo clippy", "typecheck": "cargo check", "e2e": ""}
-    return {"test": "", "lint": "", "typecheck": "", "e2e": ""}
+    elif (root / "go.mod").exists():
+        guess = {"test": "go test ./...", "lint": "go vet ./...", "typecheck": "", "e2e": ""}
+    elif (root / "Cargo.toml").exists():
+        guess = {"test": "cargo test", "lint": "cargo clippy",
+                 "typecheck": "cargo check", "e2e": ""}
+    else:
+        guess = {"test": "", "lint": "", "typecheck": "", "e2e": ""}
+    return {k: (v if (v and _tool_available(v, root)) else "") for k, v in guess.items()}
 
 
 def _detect_integration_branch(repo_root: Path) -> str:

@@ -196,6 +196,15 @@ class Scheduler:
         reclaimed = locks.reclaim_stale(integ)
         if reclaimed:
             self._log(f"reclaimed stale task lock(s): {', '.join(reclaimed)}")
+        # R4 crash recovery: no worker is running in this fresh process yet, so any
+        # issue resting in a mid-flight status is an orphan from a previous, now-dead
+        # run (e.g. Foreman was SIGKILLed). Reset it to QUEUED — preserving its
+        # attempt count and its already-flipped verification — and drop its stale
+        # task lock, so the build resumes it instead of silently stalling.
+        recovered = self._reconcile_orphans(slug, integ)
+        if recovered:
+            self._log(f"recovered orphaned in-flight issue(s) after restart: "
+                      f"{', '.join(recovered)}")
         await self._run_initializer(slug)  # WS3.1: one-time per-feature bootstrap
 
         report = BuildReport(slug=slug)
@@ -250,6 +259,27 @@ class Scheduler:
         await self._maybe_run_auditor(slug, report)  # WS5.1: spec-integrity audit
         self.store.paths.report_file(slug).write_text(report.render())
         return report
+
+    # Mid-flight statuses: a worker was actively on the issue when the process died.
+    # These are never resting states across builds, so finding one at build start
+    # means the owning worker is gone. (DONE/MERGED/NEEDS_HUMAN/QUEUED are resting.)
+    _ORPHAN_STATES = (
+        IssueStatus.IN_PROGRESS,
+        IssueStatus.TESTS_FAILING,
+        IssueStatus.AWAITING_EVALUATION,
+    )
+
+    def _reconcile_orphans(self, slug: str, integ) -> list[str]:
+        """Requeue issues left mid-flight by a crashed run (R4). No-op normally."""
+        recovered: list[str] = []
+        for issue in self.store.load_feature(slug).issues:
+            if issue.status in self._ORPHAN_STATES:
+                # Keep attempts so the retry ceiling still applies; a fresh worktree
+                # is forked on re-dispatch (worktree.create_issue_worktree cleans up).
+                self.store.update_issue_status(slug, issue.id, IssueStatus.QUEUED)
+                locks.release(integ, issue.id)
+                recovered.append(issue.id)
+        return recovered
 
     def _tally(self, slug: str, report: BuildReport) -> None:
         state = self.store.load_feature(slug)

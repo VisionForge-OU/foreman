@@ -8,6 +8,7 @@ polls on an interval. Kept free of Textual imports so it is unit-testable.
 from __future__ import annotations
 
 import tempfile
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -47,6 +48,25 @@ class WorkerLog:
             self.lines = self.lines[-500:]
 
 
+@dataclass
+class Activity:
+    """The single top-level thing Foreman is doing right now, for the status line.
+
+    Covers the otherwise-silent Phase-A agents (planner/grill/slicer) as well as the
+    build loop, so the TUI can always say what is happening instead of looking frozen.
+    """
+
+    kind: str                 # planner | grill | slicer | build | resume
+    label: str                # display label
+    started: float            # time.monotonic() at start
+    turns: int = 0            # assistant turns seen so far (live)
+    last_line: str = ""       # most recent humanized activity line
+    running: bool = True
+
+    def elapsed_s(self, now: Optional[float] = None) -> int:
+        return int((now if now is not None else time.monotonic()) - self.started)
+
+
 class Controller:
     def __init__(self, repo_root: Path | str, *, demo: bool = False):
         self.demo = demo
@@ -60,7 +80,8 @@ class Controller:
         self.backend = self._build_backend()
         self.runner = AgentRunner(self.backend)
         self.pipeline = Pipeline(self.store, self.config, self.backend,
-                                 self.runner, run_id_clock=_run_id)
+                                 self.runner, run_id_clock=_run_id,
+                                 event_sink=self._on_phase_event)
         self.scheduler = Scheduler(self.store, self.config, self.backend, self.runner,
                                    ledger=CostLedger(self.store.paths.daily_cost_file),
                                    monitor=self, run_id_clock=_run_id)
@@ -68,6 +89,8 @@ class Controller:
         self.workers: dict[str, WorkerLog] = {}
         self.global_log: list[str] = []
         self.bell_pending = False
+        # What Foreman is doing right now (drives the TUI status line). None = idle.
+        self.activity: Optional[Activity] = None
         # optional callback for headless/CLI live logging
         self.log_sink = None
 
@@ -110,7 +133,55 @@ class Controller:
 
     def log(self, message: str) -> None:
         self.global_log.append(message)
+        if len(self.global_log) > 1000:
+            self.global_log = self.global_log[-1000:]
         self._emit(message)
+
+    # ------------------------------------------------------------------ #
+    # Current-activity tracking (drives the status line; §8.3)
+    # ------------------------------------------------------------------ #
+    def begin_activity(self, kind: str, label: str) -> None:
+        self.activity = Activity(kind=kind, label=label, started=time.monotonic())
+        self.log(f"▶ {label} started")
+
+    def end_activity(self, ok: bool, note: str = "") -> None:
+        if self.activity is not None:
+            self.activity.running = False
+            verb = "done" if ok else "failed"
+            self.log(f"■ {self.activity.label} {verb}" + (f" — {note}" if note else ""))
+        self.activity = None
+
+    def _on_phase_event(self, event: StreamEvent) -> None:
+        """Pipeline event sink: keep the status line + global log live for the
+        otherwise-silent Phase-A agents (planner/grill/slicer)."""
+        if isinstance(event, AssistantMessage) and self.activity is not None:
+            self.activity.turns += 1
+        line = humanize(event)
+        if not line:
+            return
+        for sub in line.splitlines():
+            sub = sub.strip()
+            if not sub:
+                continue
+            if self.activity is not None:
+                self.activity.last_line = sub[:160]
+            self.log(sub)
+
+    def status_line(self) -> str:
+        """One-line summary of what Foreman is doing right now (markup-free)."""
+        a = self.activity
+        if a is None:
+            return "idle"
+        secs = a.elapsed_s()
+        if a.kind in ("build", "resume"):
+            running = [w for w in self.workers.values() if w.status == "running"]
+            if running:
+                parts = [f"{w.issue_id} {w.turns}t ${w.cost:.2f}" for w in running[:3]]
+                more = f" +{len(running) - 3}" if len(running) > 3 else ""
+                return f"{a.label} · {len(running)} worker(s) · {' · '.join(parts)}{more} · {secs}s"
+            return f"{a.label} · preparing… · {secs}s"
+        tail = f" · {a.last_line}" if a.last_line else " · working…"
+        return f"{a.label} · turn {a.turns} · {secs}s{tail}"
 
     def worker_started(self, issue_id: str, run_id: str) -> None:
         wl = self.workers.setdefault(issue_id, WorkerLog(issue_id))
@@ -247,17 +318,29 @@ class Controller:
     def confirm_queue(self, slug: str) -> None:
         self.store.confirm_queue(slug)
 
+    async def _tracked(self, kind: str, label: str, coro):
+        self.begin_activity(kind, label)
+        try:
+            result = await coro
+            self.end_activity(True)
+            return result
+        except Exception as e:  # surface the failure on the status line, then re-raise
+            self.end_activity(False, str(e).splitlines()[0][:80] if str(e) else "")
+            raise
+
     async def run_planner(self, slug: str):
-        return await self.pipeline.run_planner(slug)
+        return await self._tracked("planner", "planner", self.pipeline.run_planner(slug))
 
     async def run_grill(self, slug: str):
-        return await self.pipeline.run_grill(slug)
+        return await self._tracked("grill", "grill (ADR+PRD)", self.pipeline.run_grill(slug))
 
     async def run_slicer(self, slug: str):
-        return await self.pipeline.run_slicer(slug)
+        return await self._tracked("slicer", "slicer", self.pipeline.run_slicer(slug))
 
     async def build(self, slug: str):
-        return await self.scheduler.build(slug)
+        return await self._tracked("build", "build", self.scheduler.build(slug))
 
     async def resume(self, slug: str, issue_id: str, answer: str):
-        return await self.scheduler.resume_issue(slug, issue_id, answer)
+        return await self._tracked(
+            "resume", f"resume {issue_id}", self.scheduler.resume_issue(slug, issue_id, answer)
+        )

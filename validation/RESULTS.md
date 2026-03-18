@@ -33,8 +33,8 @@ Conductor notes: notesapi worker/planner model overridden to `claude-haiku-4-5` 
 | Vendored `foreman-*` skills installed with version markers | PASS | `foreman_skill_version: 1/2` in each SKILL.md; status shows `installed=N packaged=N [ok]` |
 | Evaluator/auditor agent files installed | PASS | `.claude/agents/foreman-{evaluator,auditor,retro}.md` |
 | hooks / `foreman-test` assets present at init | PARTIAL | **D1**: installed per-worktree at build time, not at init (by design) |
-| config defaults sane | PASS (w/ D2) | budgets/models/limits present; **D2**: auto-detected `mypy .` typecheck overreach |
-| Delete required skill → pipeline refuses start w/ visible warning | PASS | `foreman status` ⚠ + `foreman run` → `halted: required skills missing: foreman-tdd` (**D3**: exit 0) |
+| config defaults sane | PASS | budgets/models/limits present; **D2** (auto-detected `mypy .` overreach) **FIXED** — detection now gates on tool availability |
+| Delete required skill → pipeline refuses start w/ visible warning | PASS | `foreman status` ⚠ + `foreman run` → `halted: required skills missing: foreman-tdd` (exits 2 — D3 was a measurement error, retracted) |
 | Restore skill | PASS | `foreman init` reinstalls; status `[ok]` |
 
 ## Step 5.5 — Mocked demo end-to-end (sanity that machinery still works)
@@ -68,7 +68,7 @@ Evidence: `validation/evidence/fault-matrix/` (results.json + per-fault artifact
 | F8 | Overlapping `touches` | never co-scheduled; shown in graph | PASS | `conflict_graph[ISS-001]={ISS-002}`; `pick_dispatch`→{ISS-001,ISS-003}, never a+b |
 | F9 | Stale lock w/ old heartbeat | reclaimed; work proceeds | PASS | `is_stale=True`, `reclaim_stale=[ISS-XXX]`, reacquire OK |
 | F10 | Diff passes tests, violates PRD (hard vs soft delete) | evaluator objects w/ rubric; bounce = retry | PASS | verdict.json objections recorded; merged after attempts≥1, evaluator ran 2×; `f10_verdict.json` |
-| F11 | SIGKILL mid-build, restart | state recovers; no dup merge; worker/worktree reconciled | **PARTIAL** | ✅ disk recovery (ISS-001 stayed merged), ✅ NO duplicate merge / no rebuild (run dirs identical); ❌ orphaned ISS-002 left `in_progress`, not requeued on restart → **B1**; `f11_recovery.txt` |
+| F11 | SIGKILL mid-build, restart | state recovers; no dup merge; worker/worktree reconciled | **PASS** (after B1 fix) | ✅ disk recovery, ✅ NO duplicate merge / no rebuild, ✅ orphaned ISS-002 reconciled→requeued→merged (`_reconcile_orphans`); `f11_recovery.txt` |
 | F12 | `notify_command` script | fires on escalation w/ id+reason | PASS | log has `EVENT=escalation FEATURE=… REF=ISS-001 REASON=…`; `f12_notify.log` (review_needed wired sched:869) |
 
 ## Step 5 — Janitor / divergence / flywheel (machinery)
@@ -92,7 +92,7 @@ Harness: `~/foreman-validation/harness/step5.py`, `step54.py`; CLI `foreman retr
 | R1 AgentBackend seam (real CLI + mock) | PASS | `backend.py` ClaudeBackend/MockBackend; PONG probe |
 | R2 workers keep user skills (no `--strict-mcp-config`) | PASS (code) | `backend.py:77-82` |
 | R3 approval invalidation on body change | PASS | F1 (PRD), 5.2 (amendment re-seal) |
-| R4 state recovered from disk on restart | PASS | F11 essentials (disk recovery, no dup merge) |
+| R4 state recovered from disk on restart | PASS | F11 full (disk recovery, no dup merge, orphan reconcile after B1 fix) |
 | R5 per-run budgets enforced by Foreman (turns/cost/timeout) | PASS | F6; `runner.py` |
 | Gated plan→ADR/PRD→issues→build ordering | PASS (mock) | demo; `_derive_phase`; live TUI = H1–H3 PENDING |
 | Parallel disjoint issues in separate worktrees; dependent waits | PASS (mock) | `test_two_independent…`; demo; conflict graph F8 |
@@ -151,15 +151,17 @@ with on-disk evidence. The trust boundaries are real: workers cannot write `veri
 empty-evidence/“done” claims bounce, approval auto-invalidates on any post-approval edit, and budget/turn
 kills escalate cleanly.
 
-**One dogfooding caveat — crash recovery is incomplete (B1, major, NOT a corruption blocker).** A hard
-SIGKILL mid-build recovers the state-of-record correctly and causes **no duplicate merge / no rebuild**
-(the dangerous modes are safe), but an issue left `in_progress` by the crash is **not requeued** on restart —
-the build silently stalls until a human resets it. This should be fixed before unattended dogfooding
-(reconcile `in_progress`→`queued` with no live lock at `build()` start).
+**Crash recovery (B1) — found and FIXED during this exercise.** The original SIGKILL test recovered the
+state-of-record with no duplicate merge, but left an interrupted `in_progress` issue un-requeued (silent stall).
+Fixed in `scheduler.py` (`_reconcile_orphans` at `build()` start: mid-flight issues → `QUEUED`, dead locks
+released, fresh worktree on re-dispatch). F11 now fully PASSES; regression test added (suite 237 passed).
+Two minor init/CLI nits: **D2** (auto-detected `mypy` overreach) fixed via tool-availability gating; **D3**
+retracted as a measurement artifact (`foreman run` already exits 2 on halt).
 
 **Not yet exercised (require the live TUI + a human, real tokens):** the real-agent happy path (Scenario A)
 and the ergonomics/revise-loop checkpoints H1–H7. Machinery underneath each is validated on the mock backend;
 what remains is agent quality + UX, which can't be judged headlessly. Budget is fully intact ($0 spent) for these.
 
-**Bottom line:** ready for *supervised* dogfooding now; fix B1 before *unattended* runs. No gate-integrity,
-verification-honesty, or data-corruption blockers found.
+**Bottom line:** ready for dogfooding. No gate-integrity, verification-honesty, or data-corruption blockers
+remain — the one major finding (B1 crash recovery) was fixed and re-verified during this exercise. Only the
+real-agent happy path + TUI ergonomics (Scenario A / H1–H7) remain, deferred to the operator with budget intact.

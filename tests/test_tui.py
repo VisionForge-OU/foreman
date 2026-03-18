@@ -1,4 +1,5 @@
 import pytest
+from textual.widgets import ListView
 
 from foreman.tui.app import (
     AttentionScreen, DashboardScreen, ReviewScreen, SettingsScreen,
@@ -22,6 +23,22 @@ async def test_tui_mounts_and_navigates(tmp_path):
         app.screen._build_feature_list()
         app.screen.refresh_data()
         await pilot.pause()
+
+        # Selecting the feature in the list must not crash and must set the slug
+        # from the ListItem name (regression: Label.renderable removed in Textual 8).
+        app.current_slug = None
+        flist = app.screen.query_one("#flist", ListView)
+        flist.focus()
+        flist.index = 0
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.current_slug == slug
+
+        # The persistent status bar renders without error and reports idle initially.
+        app.screen.query_one("#statusbar")        # widget exists
+        app.screen.refresh_status()               # updates without raising
+        assert app.controller.status_line() == "idle"
 
         # Run the planner via the dashboard action; wait for the worker.
         app.screen.action_planner()

@@ -102,3 +102,43 @@ async def test_pipeline_blocked_when_skill_missing(repo):
     slug = store.create_feature("x", "y")
     with pytest.raises(PipelineError):
         await pipe.run_planner(slug)
+
+
+@pytest.mark.asyncio
+async def test_planner_revision_never_corrupts_canonical_doc(repo):
+    """Regression ('reverted to v1'): a doc agent writes its OWN frontmatter; it must
+    land on a Foreman draft path, never the canonical plan.md, so the version-of-record
+    is never reverted or read mid-write."""
+    from foreman.demo_scripts import _init, _result
+
+    counter = itertools.count(1)
+    store = FileStore(repo, clock=lambda: f"2026-01-01T00:00:{next(counter):02d}Z")
+    slug = store.create_feature("Add tagging", "tags on notes")
+    # Prior state: Foreman-owned canonical plan at v3, in review.
+    store.write_doc(slug, "plan", "# old plan v3", version=3, status=DocStatus.IN_REVIEW)
+    canonical = store.paths.doc_file(slug, "plan")
+    seen = {}
+
+    async def planner_script(spec):
+        yield _init(spec)
+        # Agent writes its OWN frontmatter (version 1 / draft) to whatever path it was
+        # handed; that must be the Foreman draft path, not the canonical doc.
+        draft = store.paths.doc_draft_file(slug, "plan")
+        draft.write_text("---\nkind: plan\nversion: 1\nstatus: draft\n---\n# revised plan\n")
+        # Mid-run the canonical doc must be UNCHANGED (still v3) — not reverted to v1.
+        d = store.load_feature(slug).doc("plan")
+        seen["mid"] = (d.version, d.status.value)
+        seen["canonical_corrupted"] = "status: draft" in canonical.read_text()
+        yield _result()
+
+    rc = itertools.count(1)
+    pipe = Pipeline(store, Config(), MockBackend({"planner": planner_script}),
+                    run_id_clock=lambda: f"r{next(rc):04d}")
+    plan = await pipe.run_planner(slug)
+
+    # Mid-run: canonical stayed v3/in_review; the agent's v1/draft never showed.
+    assert seen["mid"] == (3, "in_review")
+    assert seen["canonical_corrupted"] is False
+    # After: Foreman re-stamped the canonical to v4 and owns the frontmatter.
+    assert plan.version == 4 and plan.status == DocStatus.IN_REVIEW
+    assert plan.body.strip() == "# revised plan"   # agent frontmatter stripped

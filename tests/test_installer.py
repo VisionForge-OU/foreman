@@ -1,10 +1,34 @@
 from foreman import vendored, config
-from foreman.installer import init_repo
+from foreman.installer import init_repo, _detect_commands, _tool_available
 from foreman.paths import RepoPaths
 from foreman.vendored import SkillState
 
 
 REQUIRED = ["foreman-grill-docs", "foreman-to-prd", "foreman-to-issues", "foreman-tdd"]
+
+
+def test_tool_available_guards_absent_tools(tmp_path):
+    assert _tool_available("", tmp_path) is False
+    assert _tool_available("definitely-not-a-real-tool-xyz --flag", tmp_path) is False
+    # An interpreter that is always present resolves true.
+    import sys
+    from pathlib import Path
+    assert _tool_available(f"{Path(sys.executable).name} --version", tmp_path) is True
+
+
+def test_detect_commands_drops_uninstalled_tools(tmp_path):
+    """A python project never gets a `mypy .` typecheck guess unless mypy exists."""
+    import shutil
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n")
+    cmds = _detect_commands(tmp_path)
+    if shutil.which("mypy") is None:
+        assert cmds["typecheck"] == ""        # not blindly "mypy ."
+    if shutil.which("pytest") is None:
+        assert cmds["test"] == ""
+    # Whatever survives must be a tool that actually resolves on PATH.
+    for v in cmds.values():
+        if v:
+            assert shutil.which(v.split()[0]) is not None
 
 
 def test_packaged_skills_present():

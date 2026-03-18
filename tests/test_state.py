@@ -119,3 +119,23 @@ def test_done_phase_when_all_issues_done(store):
     store.write_issue(slug, Issue(id="ISS-001", title="a", status=IssueStatus.MERGED))
     store.confirm_queue(slug)
     assert store.load_feature(slug).phase == Phase.DONE
+
+
+def test_doc_with_noncanonical_status_loads_tolerantly(store):
+    """An agent can transiently write its own frontmatter (e.g. status: draft) before
+    Foreman re-stamps the canonical status, and the TUI reads docs mid-write — loading
+    must degrade gracefully, never crash the whole feature (R4)."""
+    from foreman import frontmatter
+
+    slug = store.create_feature("x", "do x")
+    # A mid-write / agent-authored plan.md: non-canonical status + garbage version.
+    store.paths.doc_file(slug, "plan").write_text(
+        frontmatter.serialize({"kind": "plan", "version": "oops", "status": "draft"},
+                              "# Plan body")
+    )
+    st = store.load_feature(slug)          # previously raised ValueError('draft' ...)
+    plan = st.doc("plan")
+    assert plan is not None
+    assert plan.status == DocStatus.DRAFTING   # unknown status -> non-approved default
+    assert plan.version == 1                    # garbage version -> default
+    assert st.phase == Phase.PLAN_REVIEW        # feature still derivable, no crash
