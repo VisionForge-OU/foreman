@@ -44,6 +44,15 @@ run_budget:
 # progress across this many consecutive turns.
 stuck_turns: 12
 
+# Turn-budget extensions: agents/workers are told their turn budget and asked to
+# finish within it. If a worker runs out of turns (or asks via request_more_turns
+# in its FOREMAN-SUMMARY), Foreman can resume the SAME session with more turns,
+# up to this many times, before escalating to a human. Only turn exhaustion
+# extends — cost / timeout / stuck kills still escalate.
+auto_extend_turns: true     # a hard turn cut-off auto-grants an extension
+max_turn_extensions: 2      # extra resumes per issue/agent run before escalating
+turn_extension_size: 0      # turns granted per extension; 0 = reuse run_budget.max_turns
+
 e2e_enabled: true
 
 # Permission mode passed to every headless `claude` invocation.

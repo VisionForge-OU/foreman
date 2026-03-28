@@ -26,7 +26,10 @@ HEADLESS_PREAMBLE = (
     "You are running fully headless inside Foreman. There is no interactive user. "
     "Do not ask questions and do not wait for input — produce the required output "
     "files and then stop. Defer anything you genuinely cannot resolve to the "
-    "'Open questions for reviewer' section as instructed by the skill."
+    "'Open questions for reviewer' section as instructed by the skill. "
+    "You run under a bounded turn budget — work efficiently and stop cleanly rather "
+    "than sprawling; if you are cut off before finishing, Foreman may resume you to "
+    "continue, so leave your output files in the best state you can before stopping."
 )
 
 

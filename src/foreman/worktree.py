@@ -39,7 +39,16 @@ class WorktreeManager:
             await git_ops.git(self.repo_root, "branch", self.integration_branch)
 
     async def integration_worktree(self) -> Path:
-        """Create (or reuse) the worktree holding the integration branch."""
+        """Create (or reuse) the worktree holding the integration branch.
+
+        If the user's primary checkout is ALREADY on the integration branch, git
+        refuses a second worktree on it ("'main' is already used by worktree …") —
+        and the build's merges are meant to land on that branch anyway. So we use the
+        repo itself as the integration worktree: merges/e2e/audit run in the user's
+        checkout and land directly on their branch (the intended deliverable).
+        """
+        if await git_ops.current_branch(self.repo_root) == self.integration_branch:
+            return self.repo_root
         path = self._path("_integration")
         path.parent.mkdir(parents=True, exist_ok=True)
         await git_ops.prune_worktrees(self.repo_root)
@@ -75,6 +84,10 @@ class WorktreeManager:
         return path
 
     async def remove(self, path: Path) -> None:
+        # Never remove the user's primary checkout (it can BE the integration
+        # worktree — see integration_worktree); rmtree-ing it would delete the repo.
+        if Path(path).resolve() == self.repo_root:
+            return
         check = await git_ops.git(self.repo_root, "worktree", "list", "--porcelain")
         if str(path) in check.stdout:
             await git_ops.remove_worktree(self.repo_root, path)
@@ -84,6 +97,8 @@ class WorktreeManager:
 
     async def rollback_and_remove(self, path: Path) -> None:
         """Discard all changes in a worktree then remove it (kill cleanup, §7)."""
+        if Path(path).resolve() == self.repo_root:
+            return  # never discard/remove the user's primary checkout
         if path.exists():
             await git_ops.discard_changes(path)
         await self.remove(path)

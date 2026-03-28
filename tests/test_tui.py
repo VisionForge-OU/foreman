@@ -95,3 +95,42 @@ async def test_review_screen_blocks_approval_with_open_questions(tmp_path):
         await pilot.pause()
         from foreman.models import DocStatus
         assert c.feature(slug).doc("prd").status != DocStatus.APPROVED
+
+
+@pytest.mark.asyncio
+async def test_worker_screen_list_stable_and_selectable(tmp_path):
+    """Regression: the worker sidebar must NOT clear+rebuild every refresh (that
+    flickered, broke arrow nav, and crashed clicks). Labels update in place; the list
+    rebuilds only when the worker set changes; selecting an item updates state."""
+    from foreman.tui.controller import WorkerLog
+
+    app = ForemanTUI(repo_root=tmp_path, demo=True)
+    async with app.run_test() as pilot:
+        c = app.controller
+        c.workers["init"] = WorkerLog("init", status="done")
+        c.workers["ISS-001"] = WorkerLog("ISS-001")
+        c.workers["ISS-001"].lines = ["hello from the worker"]
+
+        app.push_screen(WorkerScreen())
+        await pilot.pause()
+        screen = app.screen
+        lv = screen.query_one("#wlist", ListView)
+        assert [i.name for i in lv.children] == ["init", "ISS-001"]
+
+        # Steady-state refresh (only a label changed) must reuse the SAME ListItems.
+        before = [id(i) for i in lv.children]
+        c.workers["ISS-001"].turns = 5
+        screen.refresh_workers()
+        await pilot.pause()
+        assert [id(i) for i in lv.children] == before     # no clear/rebuild → no flicker
+
+        # A membership change DOES rebuild.
+        c.workers["ISS-002"] = WorkerLog("ISS-002")
+        screen.refresh_workers()
+        await pilot.pause()
+        assert [i.name for i in lv.children] == ["init", "ISS-001", "ISS-002"]
+
+        # Moving the highlight (arrow/tab/click) updates the selection without crashing.
+        lv.index = 1
+        await pilot.pause()
+        assert screen.selected == "ISS-001"

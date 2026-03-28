@@ -110,3 +110,13 @@ def test_initializer_fallback_preserves_existing(tmp_path):
     )
     assert flags == {"init_sh": False, "feature_state": False}
     assert "echo mine" in init_path.read_text()
+
+
+def test_worker_prompt_injects_turn_budget_awareness():
+    a = ContextAssembler()
+    p = a.worker_prompt(_issue(), {"test": "pytest"}, turns=80)
+    assert "TURN BUDGET" in p.text and "request_more_turns" in p.text
+    assert "turn_budget" in p.breakdown
+    # turns=0 (default) omits the section entirely.
+    p0 = a.worker_prompt(_issue(), {"test": "pytest"}, turns=0)
+    assert "TURN BUDGET" not in p0.text and "turn_budget" not in p0.breakdown

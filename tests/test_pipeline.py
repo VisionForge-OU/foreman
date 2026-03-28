@@ -142,3 +142,42 @@ async def test_planner_revision_never_corrupts_canonical_doc(repo):
     # After: Foreman re-stamped the canonical to v4 and owns the frontmatter.
     assert plan.version == 4 and plan.status == DocStatus.IN_REVIEW
     assert plan.body.strip() == "# revised plan"   # agent frontmatter stripped
+
+
+@pytest.mark.asyncio
+async def test_planner_resumes_on_turn_kill(repo):
+    """Phase-A: a planner cut off by the turn budget is resumed (same session) to
+    finish, rather than handing back a half-written draft (the planner-kill problem)."""
+    from foreman.demo_scripts import _init, _result, _assistant
+    from foreman.stream_parser import parse_event
+
+    counter = itertools.count(1)
+    store = FileStore(repo, clock=lambda: f"2026-01-01T00:00:{next(counter):02d}Z")
+    cfg = Config()
+    cfg.run_budget.max_turns = 2          # tiny → first run is cut off
+    slug = store.create_feature("Add tagging", "tags on notes")
+    sessions = []
+
+    async def planner_script(spec):
+        sessions.append(spec.session_id)
+        yield _init(spec)
+        if len(sessions) == 1:
+            for i in range(4):            # 4 > max_turns 2 → KILLED_TURNS
+                yield parse_event({"type": "assistant", "message": {
+                    "content": [{"type": "text", "text": f"exploring {i}"}],
+                    "usage": {"input_tokens": 1}}})
+            yield _result()
+        else:                             # resumed: write the draft + finish
+            draft = store.paths.doc_draft_file(slug, "plan")
+            draft.parent.mkdir(parents=True, exist_ok=True)
+            draft.write_text("# Implementation Plan\n\nThe plan body.")
+            yield _assistant(text="wrote the plan draft")
+            yield _result()
+
+    rc = itertools.count(1)
+    pipe = Pipeline(store, cfg, MockBackend({"planner": planner_script}),
+                    run_id_clock=lambda: f"r{next(rc):04d}")
+    plan = await pipe.run_planner(slug)
+    assert "Implementation Plan" in plan.body
+    assert len(sessions) == 2             # initial + one resume
+    assert sessions[1] == "demo-planner"  # resumed the SAME session

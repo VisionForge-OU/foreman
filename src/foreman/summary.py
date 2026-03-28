@@ -29,6 +29,9 @@ class WorkerSummary:
     # Evidence artifacts the worker claims to have saved under runs/<id>/evidence/
     # (WS1.3 completion contract). Foreman validates these exist and are non-empty.
     evidence: list[str] = field(default_factory=list)
+    # The worker is making real progress but ran out of turn budget and is asking
+    # for N more turns to continue THIS same session (not an escalation). 0 = no ask.
+    request_more_turns: int = 0
     raw: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -75,5 +78,14 @@ def _from_dict(obj: dict[str, Any]) -> WorkerSummary:
         escalate=bool(obj.get("escalate", False)),
         escalation_question=str(obj.get("escalation_question", "")),
         evidence=list(obj.get("evidence", []) or []),
+        request_more_turns=_safe_nonneg_int(obj.get("request_more_turns", 0)),
         raw=obj,
     )
+
+
+def _safe_nonneg_int(value: Any) -> int:
+    """Tolerant parse of ``request_more_turns`` (null / "" / junk → 0; clamp ≥ 0)."""
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return 0

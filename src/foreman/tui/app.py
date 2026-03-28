@@ -182,22 +182,41 @@ class WorkerScreen(Screen):
         self.set_interval(0.3, self.refresh_workers)
         self.refresh_workers()
 
+    @staticmethod
+    def _worker_label(iid: str, w) -> str:
+        return f"{iid} [{w.status}] ${w.cost:.3f} {w.turns}t"
+
     def refresh_workers(self) -> None:
         workers = self.app.controller.workers
         lv = self.query_one("#wlist", ListView)
         ids = list(workers.keys())
         if self.selected is None and ids:
             self.selected = ids[0]
-        # Rebuild list labels (cheap; few workers).
-        lv.clear()
-        for iid in ids:
-            w = workers[iid]
-            lv.append(ListItem(Label(f"{iid} [{w.status}] ${w.cost:.3f} {w.turns}t"), name=iid))
+        # IMPORTANT: only rebuild the list when the SET of workers changes. Rebuilding
+        # (clear + re-append) every tick made the sidebar flicker, wiped the arrow-key
+        # highlight, and raced with click handling (Textual looked the clicked item up
+        # in a node list we had just cleared → ValueError crash). In steady state we
+        # update the existing labels in place instead.
+        existing = [item.name for item in lv.children]
+        if existing != ids:
+            lv.clear()
+            for iid in ids:
+                lv.append(ListItem(Label(self._worker_label(iid, workers[iid])), name=iid))
+            if self.selected in ids:
+                lv.index = ids.index(self.selected)
+        else:
+            for item in lv.children:
+                w = workers.get(item.name)
+                if w is not None:
+                    item.query_one(Label).update(self._worker_label(item.name, w))
+        self._update_log()
+
+    def _update_log(self) -> None:
+        workers = self.app.controller.workers
         body = self.query_one("#logbody", Static)
         if self.selected and self.selected in workers:
             w = workers[self.selected]
-            bar = self._budget_bar(self.selected, w)
-            body.update(bar + "\n" + "\n".join(w.lines[-300:]))
+            body.update(self._budget_bar(self.selected, w) + "\n" + "\n".join(w.lines[-300:]))
         else:
             body.update("No active workers. Start a build from the dashboard ([b]b[/b]).")
 
@@ -208,18 +227,21 @@ class WorkerScreen(Screen):
         if event.item is None:
             return
         self.selected = event.item.name
-        self.refresh_workers()
+        self._update_log()
+
+    def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
+        # Arrow-key navigation moves the highlight — follow it in the log pane.
+        if event.item is not None and event.item.name:
+            self.selected = event.item.name
+            self._update_log()
 
     def action_next_worker(self) -> None:
-        ids = list(self.app.controller.workers.keys())
-        if not ids:
+        lv = self.query_one("#wlist", ListView)
+        n = len(lv.children)
+        if not n:
             return
-        if self.selected in ids:
-            i = (ids.index(self.selected) + 1) % len(ids)
-        else:
-            i = 0
-        self.selected = ids[i]
-        self.refresh_workers()
+        # Moving the highlight fires Highlighted → updates self.selected + the log pane.
+        lv.index = ((lv.index or 0) + 1) % n
 
     def action_kill(self) -> None:
         if self.selected and self.app.controller.scheduler.kill_issue(self.selected):

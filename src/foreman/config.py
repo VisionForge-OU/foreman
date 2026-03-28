@@ -83,6 +83,12 @@ class Config:
     stuck_turns: int = 12
     e2e_enabled: bool = True
     permission_mode: str = "acceptEdits"
+    # Turn-budget extensions: when an agent/worker runs out of turns (or a worker
+    # asks via request_more_turns) Foreman can resume the SAME session with more
+    # turns up to ``max_turn_extensions`` times before escalating to a human.
+    auto_extend_turns: bool = True
+    max_turn_extensions: int = 2
+    turn_extension_size: int = 0      # 0 ⇒ reuse run_budget.max_turns per extension
 
     # ---- accessors used by the runner / scheduler ----
     def command(self, name: str) -> Optional[str]:
@@ -113,6 +119,10 @@ class Config:
             errs.append("limits.max_parallel must be >= 1")
         if self.limits.max_retries < 0:
             errs.append("limits.max_retries must be >= 0")
+        if self.max_turn_extensions < 0:
+            errs.append("max_turn_extensions must be >= 0")
+        if self.turn_extension_size < 0:
+            errs.append("turn_extension_size must be >= 0")
         if self.limits.daily_cost_usd <= 0:
             errs.append("limits.daily_cost_usd must be > 0")
         if not self.required_skills:
@@ -155,6 +165,9 @@ class Config:
             "stuck_turns": self.stuck_turns,
             "e2e_enabled": self.e2e_enabled,
             "permission_mode": self.permission_mode,
+            "auto_extend_turns": self.auto_extend_turns,
+            "max_turn_extensions": self.max_turn_extensions,
+            "turn_extension_size": self.turn_extension_size,
         }
 
 
@@ -196,6 +209,9 @@ def from_dict(d: dict[str, Any]) -> Config:
         stuck_turns=int(d.get("stuck_turns", 12)),
         e2e_enabled=bool(d.get("e2e_enabled", True)),
         permission_mode=str(d.get("permission_mode", "acceptEdits")),
+        auto_extend_turns=bool(d.get("auto_extend_turns", True)),
+        max_turn_extensions=int(d.get("max_turn_extensions", 2)),
+        turn_extension_size=int(d.get("turn_extension_size", 0)),
     )
     if d.get("evaluator_budget"):
         cfg.evaluator_budget = Budget.from_dict(d.get("evaluator_budget"))

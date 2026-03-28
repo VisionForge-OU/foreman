@@ -63,3 +63,11 @@ def test_ignores_non_foreman_json_blocks_and_takes_last_valid():
 {"schema":"foreman-summary/v1","issue_id":"LAST","commands":{}}
 ```"""
     assert extract(text).issue_id == "LAST"
+
+
+def test_request_more_turns_parsed_tolerantly():
+    base = '{"schema":"foreman-summary/v1","issue_id":"ISS-001"%s}'
+    assert extract("```json\n" + base % ',"request_more_turns":15' + "\n```").request_more_turns == 15
+    assert extract("```json\n" + base % "" + "\n```").request_more_turns == 0      # absent
+    assert extract("```json\n" + base % ',"request_more_turns":null' + "\n```").request_more_turns == 0
+    assert extract("```json\n" + base % ',"request_more_turns":-3' + "\n```").request_more_turns == 0  # clamp ≥0

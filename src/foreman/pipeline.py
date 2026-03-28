@@ -14,7 +14,7 @@ the frontmatter.
 from __future__ import annotations
 
 import itertools
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -22,7 +22,7 @@ from . import frontmatter, vendored
 from .backend import AgentBackend, RunSpec
 from .config import Config
 from .models import DocStatus, GatedDoc, Phase
-from .runner import AgentRunner, RunResult
+from .runner import AgentRunner, RunResult, KILLED_TURNS
 from .skill_invocation import SkillInvocation
 from .state import FileStore
 
@@ -84,29 +84,55 @@ class Pipeline:
     # ------------------------------------------------------------------ #
     async def _spawn(self, slug: str, ctx: SpawnContext, budget=None) -> RunResult:
         budget = budget or self.config.run_budget
-        run_id = f"{self._run_id_clock()}-{ctx.label}"
-        spec = RunSpec(
-            kind=ctx.kind,
-            slug=slug,
-            repo_root=self.store.paths.root,
-            cwd=ctx.cwd,
-            prompt=ctx.prompt,
-            model=ctx.model,
-            effort=self.config.effort,
-            permission_mode=self.config.permission_mode,
-            budget=budget,
-            label=ctx.label,
-            extra_dirs=ctx.extra_dirs,
-        )
-        transcript = self.store.paths.run_transcript(slug, run_id)
-        result = await self.runner.run(
-            spec, run_id=run_id, transcript_path=transcript, on_event=self.event_sink
-        )
-        # Persist run metadata + summary (R4).
-        self.store.write_run_record(slug, result.record)
-        if result.final_text:
-            self.store.write_run_summary(slug, run_id, result.final_text)
-        return result
+        # Phase-A agents emit no FOREMAN-SUMMARY, so the only extension trigger here is
+        # a hard turn cut-off: resume the SAME session with more turns, up to the cap,
+        # rather than handing back a half-written draft (the planner routinely needs it).
+        extensions = 0
+        session_id: Optional[str] = None
+        prompt = ctx.prompt
+        while True:
+            run_id = f"{self._run_id_clock()}-{ctx.label}"
+            if extensions > 0:
+                ext_turns = self.config.turn_extension_size or self.config.run_budget.max_turns
+                run_budget = replace(budget, max_turns=ext_turns)
+            else:
+                run_budget = budget
+            spec = RunSpec(
+                kind=ctx.kind,
+                slug=slug,
+                repo_root=self.store.paths.root,
+                cwd=ctx.cwd,
+                prompt=prompt,
+                model=ctx.model,
+                effort=self.config.effort,
+                permission_mode=self.config.permission_mode,
+                budget=run_budget,
+                label=ctx.label,
+                extra_dirs=ctx.extra_dirs,
+                session_id=session_id,
+            )
+            transcript = self.store.paths.run_transcript(slug, run_id)
+            result = await self.runner.run(
+                spec, run_id=run_id, transcript_path=transcript, on_event=self.event_sink
+            )
+            # Persist run metadata + summary (R4).
+            self.store.write_run_record(slug, result.record)
+            if result.final_text:
+                self.store.write_run_summary(slug, run_id, result.final_text)
+
+            if (result.record.terminal_reason == KILLED_TURNS
+                    and self.config.auto_extend_turns
+                    and result.record.session_id
+                    and extensions < self.config.max_turn_extensions):
+                extensions += 1
+                session_id = result.record.session_id
+                prompt = (
+                    "CONTINUE — Foreman granted you more turns and RESUMED your prior "
+                    "session. Pick up exactly where you left off, finish writing your "
+                    f"required output file(s) to the path(s) given earlier, then stop."
+                )
+                continue
+            return result
 
     @staticmethod
     def _run_note(result: RunResult) -> str:

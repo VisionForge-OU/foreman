@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import itertools
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Optional, Protocol
@@ -32,7 +32,7 @@ from .context.assembler import AssembledPrompt, ContextAssembler, estimate_token
 from .config import Config
 from .ledger import CostLedger
 from .models import DocStatus, IssueStatus, Issue
-from .runner import AgentRunner, RunResult, KILLED_USER
+from .runner import AgentRunner, RunResult, KILLED_USER, KILLED_TURNS
 from .skill_invocation import SkillInvocation
 from .state import FileStore
 from .verify import verify
@@ -330,6 +330,9 @@ class Scheduler:
         failure_report = ""
         prior_progress = ""
         prior_session_id: Optional[str] = None
+        # Turn-budget extensions used so far this _work_issue (in-memory: a crash
+        # tears down the session/worktree, so the count is meaningless after).
+        turn_extensions = 0
         prd_sections = self._prd_sections(slug, issue)
         feature_state = initializer.read_feature_state(
             self.store.paths.feature_state_file(slug)
@@ -343,6 +346,19 @@ class Scheduler:
                 evidence_dir.mkdir(parents=True, exist_ok=True)
                 # WS3.1: every session runs the feature bootstrap first.
                 await self._run_init_sh(slug, wt)
+                # Turn-budget extension: this loop continues the SAME session with a
+                # fresh turn allowance, rather than a fresh-context retry.
+                if turn_extensions > 0:
+                    ext_turns = (self.config.turn_extension_size
+                                 or self.config.run_budget.max_turns)
+                    run_budget = replace(issue.budget, max_turns=ext_turns)
+                    resume_id = prior_session_id  # force resume regardless of retry_strategy
+                else:
+                    ext_turns = 0
+                    run_budget = issue.budget
+                    # WS3.3: fresh session by default; `resume` continues prior context.
+                    resume_id = (prior_session_id
+                                 if self.config.retry_strategy == "resume" else None)
                 if janitor_kind:  # WS4.3: specialist janitor prompt, same pipeline
                     jtext = janitor_mod.build_prompt(
                         issue, janitor_kind, evidence_dir=evidence_dir,
@@ -359,17 +375,24 @@ class Scheduler:
                         prd_sections=prd_sections, feature_state=feature_state,
                         progress=prior_progress, failure_report=failure_report,
                         reviewer_answer=reviewer_answer or "",
+                        turns=run_budget.max_turns,
                     )
                 reviewer_answer = None
-                # WS3.3: fresh session by default; `resume` continues prior context.
-                resume_id = (prior_session_id
-                             if self.config.retry_strategy == "resume" else None)
+                prompt_text = assembled.text
+                if ext_turns:
+                    prompt_text = (
+                        f"CONTINUE — Foreman granted you ~{ext_turns} more turns and "
+                        "RESUMED your prior session. Pick up exactly where you left off; "
+                        "do NOT restart from scratch. Finish the slice, run the gate "
+                        "commands, save evidence, write your progress.md handoff, and "
+                        "emit the FOREMAN-SUMMARY when done.\n\n"
+                    ) + prompt_text
                 spec = RunSpec(
                     kind="janitor" if janitor_kind else "tdd",
                     slug=slug, repo_root=self.store.paths.root, cwd=wt,
-                    prompt=assembled.text, model=self.config.model_worker,
+                    prompt=prompt_text, model=self.config.model_worker,
                     effort=self.config.effort,
-                    permission_mode=self.config.permission_mode, budget=issue.budget,
+                    permission_mode=self.config.permission_mode, budget=run_budget,
                     label=issue.id, extra_dirs=[self.store.paths.feature_dir(slug)],
                     settings_path=hookinst.settings_path, env=hookinst.env,
                     session_id=resume_id,
@@ -400,6 +423,37 @@ class Scheduler:
                     if self.monitor:
                         self.monitor.worker_finished(issue.id, "killed", result)
                     return "killed"
+
+                # Turn-budget extension: a worker that asks for more turns (or one cut
+                # off by the turn limit) gets a bounded resume of the SAME session to
+                # continue, instead of escalating. Only turn exhaustion / an explicit
+                # request — cost/timeout/stuck kills still escalate below.
+                summary = result.summary
+                wants_more = bool(summary and summary.request_more_turns
+                                  and not summary.escalate)
+                hard_turns = result.record.terminal_reason == KILLED_TURNS
+                if (wants_more or hard_turns) and self.config.auto_extend_turns:
+                    if (prior_session_id
+                            and turn_extensions < self.config.max_turn_extensions):
+                        turn_extensions += 1
+                        self._log(
+                            f"  ↻ {issue.id}: turn extension "
+                            f"{turn_extensions}/{self.config.max_turn_extensions} "
+                            f"({'requested' if wants_more else 'cut off'}) — "
+                            "resuming the same session"
+                        )
+                        continue  # keep the worktree; do NOT touch `attempts`
+                    reason = (
+                        f"turn budget exhausted after {turn_extensions} extension(s)"
+                        if prior_session_id else
+                        "turn budget exhausted (no resumable session to continue)"
+                    )
+                    self._escalate(slug, issue, reason)
+                    self._stamp_outcome(slug, result, metrics_mod.escalated(reason))
+                    await self.worktrees.remove(wt)
+                    if self.monitor:
+                        self.monitor.worker_finished(issue.id, "needs_human", result)
+                    return "escalated"
 
                 # Agent asked for help, or a budget/timeout/stuck kill → escalate.
                 esc = result.escalation_reason
@@ -550,6 +604,57 @@ class Scheduler:
             hooks.cleanup(wt)
             locks.release(integ, issue.id)  # WS4.2
 
+    async def _run_agent_with_extensions(
+        self, slug: str, *, label: str, monitor_id: Optional[str], base_budget,
+        build_spec, continuation: str = "",
+    ):
+        """Run a non-worker agent (evaluator / e2e / auditor) with bounded turn-budget
+        extensions: on a hard turn cut-off, resume the SAME session with more turns up
+        to ``max_turn_extensions`` before giving up — so a long evaluation/audit/e2e
+        isn't lost to the budget. Persists each run's record + summary and accrues cost.
+
+        ``build_spec(session_id, budget) -> RunSpec`` builds the spec per attempt.
+        Returns ``(final RunResult, final run_id)``.
+        """
+        extensions = 0
+        session_id: Optional[str] = None
+        while True:
+            run_id = f"{self._run_id_clock()}-{label}"
+            if extensions > 0:
+                budget = replace(
+                    base_budget,
+                    max_turns=(self.config.turn_extension_size or base_budget.max_turns),
+                )
+            else:
+                budget = base_budget
+            spec = build_spec(session_id, budget)
+            if extensions and continuation:
+                spec = replace(spec, prompt=continuation + "\n\n" + spec.prompt)
+            if self.monitor and monitor_id:
+                self.monitor.worker_started(monitor_id, run_id)
+            result = await self.runner.run(
+                spec, run_id=run_id,
+                transcript_path=self.store.paths.run_transcript(slug, run_id),
+                on_event=(lambda e, mid=monitor_id: self.monitor.worker_event(mid, e))
+                if (self.monitor and monitor_id) else None,
+            )
+            self.store.write_run_record(slug, result.record)
+            if result.final_text:
+                self.store.write_run_summary(slug, run_id, result.final_text)
+            self.ledger.add(result.record.cost_usd)
+
+            if (result.record.terminal_reason == KILLED_TURNS
+                    and self.config.auto_extend_turns
+                    and result.record.session_id
+                    and extensions < self.config.max_turn_extensions):
+                extensions += 1
+                session_id = result.record.session_id
+                self._log(f"  ↻ {label}: turn extension "
+                          f"{extensions}/{self.config.max_turn_extensions} (cut off) — "
+                          "resuming the same session to finish")
+                continue
+            return result, run_id
+
     async def _evaluate(
         self, slug: str, issue: Issue, wt: Path, gate, evidence_dir: Path
     ) -> Optional[evaluator_mod.Verdict]:
@@ -562,26 +667,21 @@ class Scheduler:
             issue, prd_sections=prd_sections, diff=diff, worktree=wt,
             evidence_dir=evidence_dir, evidence_artifacts=gate.evidence_artifacts,
         )
-        run_id = f"{self._run_id_clock()}-{issue.id}-eval"
-        spec = RunSpec(
-            kind="evaluator", slug=slug, repo_root=self.store.paths.root, cwd=wt,
-            prompt=prompt, model=self.config.model_evaluator, effort=self.config.effort,
-            permission_mode=self.config.permission_mode, budget=self.config.evaluator_budget,
-            label=f"{issue.id}-eval", agent=evaluator_mod.AGENT_NAME,
-            extra_dirs=[self.store.paths.feature_dir(slug)],
+        def _build(session_id, budget):
+            return RunSpec(
+                kind="evaluator", slug=slug, repo_root=self.store.paths.root, cwd=wt,
+                prompt=prompt, model=self.config.model_evaluator, effort=self.config.effort,
+                permission_mode=self.config.permission_mode, budget=budget,
+                label=f"{issue.id}-eval", agent=evaluator_mod.AGENT_NAME,
+                extra_dirs=[self.store.paths.feature_dir(slug)], session_id=session_id,
+            )
+        result, run_id = await self._run_agent_with_extensions(
+            slug, label=f"{issue.id}-eval", monitor_id=f"{issue.id}-eval",
+            base_budget=self.config.evaluator_budget, build_spec=_build,
+            continuation=("CONTINUE — Foreman resumed your prior session with more "
+                          "turns. Finish grading this slice and emit the required "
+                          "verdict JSON block, then stop. Do not start over."),
         )
-        if self.monitor:
-            self.monitor.worker_started(f"{issue.id}-eval", run_id)
-        result = await self.runner.run(
-            spec, run_id=run_id,
-            transcript_path=self.store.paths.run_transcript(slug, run_id),
-            on_event=(lambda e, iid=f"{issue.id}-eval": self.monitor.worker_event(iid, e))
-            if self.monitor else None,
-        )
-        self.store.write_run_record(slug, result.record)
-        if result.final_text:
-            self.store.write_run_summary(slug, run_id, result.final_text)
-        self.ledger.add(result.record.cost_usd)
 
         verdict = evaluator_mod.parse(
             result.final_text, min_score=self.config.evaluator_min_score
@@ -821,25 +921,22 @@ class Scheduler:
             return
         e2e_cmd = self.config.command("e2e")
         integ = await self.worktrees.integration_worktree()
-        run_id = f"{self._run_id_clock()}-e2e"
         prompt = SkillInvocation.e2e(prd.body, e2e_cmd)
-        spec = RunSpec(
-            kind="e2e", slug=slug, repo_root=self.store.paths.root, cwd=integ,
-            prompt=prompt, model=self.config.model_worker, effort=self.config.effort,
-            permission_mode=self.config.permission_mode, budget=self.config.run_budget,
-            label="e2e", extra_dirs=[self.store.paths.feature_dir(slug)],
+
+        def _build(session_id, budget):
+            return RunSpec(
+                kind="e2e", slug=slug, repo_root=self.store.paths.root, cwd=integ,
+                prompt=prompt, model=self.config.model_worker, effort=self.config.effort,
+                permission_mode=self.config.permission_mode, budget=budget,
+                label="e2e", extra_dirs=[self.store.paths.feature_dir(slug)],
+                session_id=session_id,
+            )
+        await self._run_agent_with_extensions(
+            slug, label="e2e", monitor_id="e2e", base_budget=self.config.run_budget,
+            build_spec=_build,
+            continuation=("CONTINUE — Foreman resumed your prior session with more "
+                          "turns. Finish the e2e flow and stop."),
         )
-        if self.monitor:
-            self.monitor.worker_started("e2e", run_id)
-        result = await self.runner.run(
-            spec, run_id=run_id,
-            transcript_path=self.store.paths.run_transcript(slug, run_id),
-            on_event=(lambda e: self.monitor.worker_event("e2e", e)) if self.monitor else None,
-        )
-        self.store.write_run_record(slug, result.record)
-        if result.final_text:
-            self.store.write_run_summary(slug, run_id, result.final_text)
-        self.ledger.add(result.record.cost_usd)
         if e2e_cmd:
             async with self._merge_lock:
                 await git_ops.commit_all(integ, "e2e tests")
@@ -866,26 +963,23 @@ class Scheduler:
         ):
             return  # only audit a fully-landed feature
         integ = await self.worktrees.integration_worktree()
-        run_id = f"{self._run_id_clock()}-audit"
         prompt = audit_mod.build_prompt(prd_doc.body, worktree=integ, e2e_summary=report.e2e or "")
-        spec = RunSpec(
-            kind="auditor", slug=slug, repo_root=self.store.paths.root, cwd=integ,
-            prompt=prompt, model=self.config.model_auditor, effort=self.config.effort,
-            permission_mode=self.config.permission_mode, budget=self.config.evaluator_budget,
-            label="audit", agent=audit_mod.AGENT_NAME,
-            extra_dirs=[self.store.paths.feature_dir(slug)],
+
+        def _build(session_id, budget):
+            return RunSpec(
+                kind="auditor", slug=slug, repo_root=self.store.paths.root, cwd=integ,
+                prompt=prompt, model=self.config.model_auditor, effort=self.config.effort,
+                permission_mode=self.config.permission_mode, budget=budget,
+                label="audit", agent=audit_mod.AGENT_NAME,
+                extra_dirs=[self.store.paths.feature_dir(slug)], session_id=session_id,
+            )
+        result, run_id = await self._run_agent_with_extensions(
+            slug, label="audit", monitor_id="audit",
+            base_budget=self.config.evaluator_budget, build_spec=_build,
+            continuation=("CONTINUE — Foreman resumed your prior session with more "
+                          "turns. Finish the audit and emit the required audit JSON "
+                          "block, then stop. Do not start over."),
         )
-        if self.monitor:
-            self.monitor.worker_started("audit", run_id)
-        result = await self.runner.run(
-            spec, run_id=run_id,
-            transcript_path=self.store.paths.run_transcript(slug, run_id),
-            on_event=(lambda e: self.monitor.worker_event("audit", e)) if self.monitor else None,
-        )
-        self.store.write_run_record(slug, result.record)
-        if result.final_text:
-            self.store.write_run_summary(slug, run_id, result.final_text)
-        self.ledger.add(result.record.cost_usd)
 
         rep = audit_mod.parse(result.final_text)
         self._write_audit(slug, run_id, rep, result.final_text)

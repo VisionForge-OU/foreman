@@ -137,3 +137,21 @@ async def test_summary_extracted_from_final_text(tmp_path):
     res = await run_with(events, Budget())
     assert res.summary is not None
     assert res.summary.claims_pass is True
+
+
+@pytest.mark.asyncio
+async def test_cancel_midflight_drains_cleanly_no_aclose_error():
+    """Cancelling a run while a step is in flight must surface CancelledError, not
+    `RuntimeError: aclose(): asynchronous generator is already running` (the crash
+    that fell out of a TUI teardown mid-build)."""
+    class BlockingBackend:
+        async def run(self, spec):
+            yield init_event()
+            await asyncio.sleep(3600)        # block inside __anext__
+
+    runner = AgentRunner(BlockingBackend())
+    task = asyncio.create_task(runner.run(make_spec(Budget()), run_id="r1"))
+    await asyncio.sleep(0.05)                # let it enter asyncio.wait on __anext__
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task

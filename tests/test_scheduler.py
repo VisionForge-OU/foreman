@@ -466,3 +466,221 @@ async def test_daily_cost_ceiling_stops_build(tmp_path):
     assert "ceiling" in report.stopped_reason
     # No issue should have completed.
     assert report.merged == []
+
+
+def _assistant_text(text):
+    from foreman.stream_parser import parse_event
+    return parse_event({"type": "assistant", "message": {
+        "content": [{"type": "text", "text": text}],
+        "usage": {"input_tokens": 1200, "output_tokens": 300}}})
+
+
+@pytest.mark.asyncio
+async def test_worker_requests_more_turns_resumes_and_merges(tmp_path):
+    """A worker that asks for more turns gets the SAME session resumed and finishes;
+    the extension does not count as a fresh retry."""
+    from foreman.demo_scripts import (
+        _init, _result, _summary_block, WORKER_CODE,
+        _write_worker_code, _write_evidence, _write_progress,
+    )
+    repo, store, slug = await _prepare_feature(tmp_path)
+    sessions = []
+
+    async def script(spec):
+        sessions.append(spec.session_id)
+        yield _init(spec)
+        if len(sessions) == 1:
+            _write_progress(spec)               # made real progress, just needs room
+            yield _assistant_text(_summary_block(spec.label, [], False, evidence=[],
+                                                 request_more_turns=20))
+            yield _result()
+        else:
+            written = _write_worker_code(spec, dict(WORKER_CODE.get(spec.label, {})))
+            ev = _write_evidence(spec, passed=True)
+            _write_progress(spec)
+            yield _assistant_text(_summary_block(spec.label, written, True, evidence=ev))
+            yield _result()
+
+    scripts = demo_scripts()
+    scripts["tdd:ISS-001"] = script
+    sched = _scheduler(store, _config(), scripts=scripts)
+    await sched.build(slug)
+    iss1 = store.load_issue(slug, "ISS-001")
+    assert iss1.status == IssueStatus.MERGED
+    assert iss1.attempts == 0                    # extension is NOT a retry
+    assert len(sessions) == 2
+    assert sessions[0] is None                   # first run: fresh
+    assert sessions[1] == "demo-tdd"             # resumed the same session
+
+
+@pytest.mark.asyncio
+async def test_worker_always_requests_more_escalates_after_cap(tmp_path):
+    from foreman.demo_scripts import _init, _result, _summary_block, _write_progress
+    repo, store, slug = await _prepare_feature(tmp_path)
+    calls = []
+
+    async def script(spec):
+        calls.append(spec.session_id)
+        yield _init(spec)
+        _write_progress(spec)
+        yield _assistant_text(_summary_block(spec.label, [], False, evidence=[],
+                                             request_more_turns=10))
+        yield _result()
+
+    scripts = demo_scripts()
+    scripts["tdd:ISS-001"] = script
+    cfg = _config()
+    cfg.max_turn_extensions = 2
+    sched = _scheduler(store, cfg, scripts=scripts)
+    await sched.build(slug)
+    iss1 = store.load_issue(slug, "ISS-001")
+    assert iss1.status == IssueStatus.NEEDS_HUMAN
+    assert len(calls) == 3                        # initial + 2 extensions
+    assert "after 2 extension" in store.paths.escalation_file(slug, "ISS-001").read_text()
+
+
+@pytest.mark.asyncio
+async def test_killed_turns_auto_extends_then_completes(tmp_path):
+    from foreman.models import Budget
+    from foreman.demo_scripts import (
+        _init, _result, _summary_block, WORKER_CODE,
+        _write_worker_code, _write_evidence, _write_progress,
+    )
+    repo, store, slug = await _prepare_feature(tmp_path)
+    iss = store.load_issue(slug, "ISS-001")
+    iss.budget = Budget(max_turns=2, max_cost_usd=0, timeout_min=45)  # tiny → cut off
+    store.write_issue(slug, iss)
+    sessions = []
+
+    async def script(spec):
+        sessions.append(spec.session_id)
+        yield _init(spec)
+        if len(sessions) == 1:
+            for i in range(4):                    # 4 > max_turns 2 → KILLED_TURNS
+                yield _assistant_text(f"step {i}")
+            yield _result()
+        else:
+            written = _write_worker_code(spec, dict(WORKER_CODE.get(spec.label, {})))
+            ev = _write_evidence(spec, passed=True)
+            _write_progress(spec)
+            yield _assistant_text(_summary_block(spec.label, written, True, evidence=ev))
+            yield _result()
+
+    scripts = demo_scripts()
+    scripts["tdd:ISS-001"] = script
+    sched = _scheduler(store, _config(), scripts=scripts)
+    await sched.build(slug)
+    iss1 = store.load_issue(slug, "ISS-001")
+    assert iss1.status == IssueStatus.MERGED
+    assert iss1.attempts == 0
+    assert sessions[1] == "demo-tdd"              # resumed after the cut-off
+
+
+@pytest.mark.asyncio
+async def test_auto_extend_disabled_escalates_on_turn_kill(tmp_path):
+    from foreman.models import Budget
+    from foreman.demo_scripts import _init, _result
+    repo, store, slug = await _prepare_feature(tmp_path)
+    iss = store.load_issue(slug, "ISS-001")
+    iss.budget = Budget(max_turns=2, max_cost_usd=0, timeout_min=45)
+    store.write_issue(slug, iss)
+    calls = []
+
+    async def script(spec):
+        calls.append(1)
+        yield _init(spec)
+        for i in range(4):
+            yield _assistant_text(f"step {i}")
+        yield _result()
+
+    scripts = demo_scripts()
+    scripts["tdd:ISS-001"] = script
+    cfg = _config()
+    cfg.auto_extend_turns = False
+    sched = _scheduler(store, cfg, scripts=scripts)
+    await sched.build(slug)
+    iss1 = store.load_issue(slug, "ISS-001")
+    assert iss1.status == IssueStatus.NEEDS_HUMAN
+    assert len(calls) == 1                         # no resume attempt
+
+
+@pytest.mark.asyncio
+async def test_cost_kill_does_not_extend(tmp_path):
+    from foreman.models import Budget
+    from foreman.demo_scripts import _init, _result
+    repo, store, slug = await _prepare_feature(tmp_path)
+    iss = store.load_issue(slug, "ISS-001")
+    iss.budget = Budget(max_turns=80, max_cost_usd=0.0001, timeout_min=45)  # cost kill
+    store.write_issue(slug, iss)
+    calls = []
+
+    async def script(spec):
+        calls.append(1)
+        yield _init(spec)
+        for i in range(3):
+            yield _assistant_text(f"expensive step {i}")
+        yield _result()
+
+    scripts = demo_scripts()
+    scripts["tdd:ISS-001"] = script
+    sched = _scheduler(store, _config(), scripts=scripts)
+    await sched.build(slug)
+    iss1 = store.load_issue(slug, "ISS-001")
+    assert iss1.status == IssueStatus.NEEDS_HUMAN   # escalated, not extended
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_build_when_repo_checked_out_on_integration_branch(tmp_path):
+    """End-to-end: a repo whose primary checkout is ON `main` (the common case) must
+    still build — merges land directly in the user's checkout, not a second worktree
+    (regression: fatal: 'main' is already used by worktree)."""
+    import subprocess
+    repo, store, slug = await _prepare_feature(tmp_path)
+    # Put the user's primary checkout on the integration branch.
+    subprocess.run(["git", "branch", "main"], cwd=repo, capture_output=True)
+    subprocess.run(["git", "checkout", "main"], cwd=repo, check=True, capture_output=True)
+    head = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=repo,
+                          capture_output=True, text=True).stdout.strip()
+    assert head == "main"
+
+    sched = _scheduler(store, _config())
+    report = await sched.build(slug)
+    assert set(report.merged) == {"ISS-001", "ISS-002"}
+    # The merges landed on the user's own `main` checkout.
+    log = subprocess.run(["git", "log", "--oneline", "main"], cwd=repo,
+                         capture_output=True, text=True).stdout.lower()
+    assert "iss-001" in log and "iss-002" in log
+
+
+@pytest.mark.asyncio
+async def test_evaluator_resumes_on_turn_kill_then_grades(tmp_path):
+    """The read-only evaluator that runs out of turns mid-grading is resumed (same
+    session) to finish, instead of producing an unparseable verdict that escalates."""
+    from foreman.models import Budget
+    from foreman.demo_scripts import _init, _result, make_evaluator_script
+    repo, store, slug = await _prepare_feature(tmp_path)
+    cfg = _config()
+    cfg.evaluator_budget = Budget(max_turns=2, max_cost_usd=0, timeout_min=20)  # tiny → cut off
+    cfg.turn_extension_size = 30
+    sessions = []
+
+    def eval_script(spec):
+        sessions.append(spec.session_id)
+        if len(sessions) == 1:
+            async def gen(s):
+                yield _init(s)
+                for i in range(4):                 # 4 > max_turns 2 → KILLED_TURNS
+                    yield _assistant_text(f"grading step {i}")
+                yield _result()
+            return gen(spec)
+        return make_evaluator_script(verdict="pass")(spec)   # resumed → real verdict
+
+    scripts = demo_scripts()
+    scripts["evaluator:ISS-001-eval"] = eval_script
+    sched = _scheduler(store, cfg, scripts=scripts)
+    await sched.build(slug)
+    iss1 = store.load_issue(slug, "ISS-001")
+    assert iss1.status == IssueStatus.MERGED          # graded + merged, not escalated
+    assert store.issue_verified(slug, "ISS-001")
+    assert sessions[1] == "demo-evaluator"            # resumed the same evaluator session

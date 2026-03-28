@@ -356,7 +356,8 @@ def _write_progress(spec: RunSpec, text: str = "Implemented the slice; tests gre
 
 
 def _summary_block(issue_id: str, files: list[str], passed: bool,
-                   evidence: list[str] | None = None) -> str:
+                   evidence: list[str] | None = None,
+                   request_more_turns: int = 0) -> str:
     import json
     obj = {
         "schema": "foreman-summary/v1",
@@ -371,6 +372,7 @@ def _summary_block(issue_id: str, files: list[str], passed: bool,
         "escalate": False,
         "escalation_question": "",
         "evidence": evidence or [],
+        "request_more_turns": request_more_turns,
     }
     return "```json\n" + json.dumps(obj, indent=2) + "\n```"
 

@@ -24,6 +24,7 @@ from ..skill_invocation import HEADLESS_PREAMBLE, use_skill
 DEFAULT_BUDGETS: dict[str, int] = {
     "preamble": 250,
     "instructions": 400,
+    "turn_budget": 200,
     "issue": 1400,
     "acceptance": 120,
     "prd": 1600,
@@ -72,6 +73,7 @@ class ContextAssembler:
         progress: str = "",
         failure_report: str = "",
         reviewer_answer: str = "",
+        turns: int = 0,
     ) -> AssembledPrompt:
         cmd_lines = "\n".join(
             f"  {name}: {cmd or '(not configured — skip)'}" for name, cmd in commands.items()
@@ -99,10 +101,27 @@ class ContextAssembler:
                 "file (a hook blocks it).\n"
             )
 
+        turn_budget = ""
+        if turns:
+            turn_budget = (
+                f"TURN BUDGET: you have ~{turns} assistant turns for THIS run, hard-"
+                "enforced by Foreman. There is NO live remaining-turns counter, so "
+                "self-pace: plan the slice, work the red-green loop efficiently, and "
+                "write your progress.md handoff BEFORE you get low. If you are making "
+                "real progress but cannot finish this slice within the budget, do NOT "
+                "keep going until you are cut off and do NOT set `escalate`. Instead, "
+                "checkpoint progress.md and emit a FOREMAN-SUMMARY with "
+                "`request_more_turns` set to the small number of extra turns you need — "
+                "Foreman may grant a bounded extension and resume THIS SAME session so "
+                "you continue where you left off. Use `escalate` only for genuine "
+                "blockers (a real question/decision), never to avoid running out of room."
+            )
+
         # (section name, raw text, optional header shown before the body)
         raw_sections: list[tuple[str, str, str]] = [
             ("preamble", HEADLESS_PREAMBLE, ""),
             ("instructions", instructions, ""),
+            ("turn_budget", turn_budget, ""),
             ("issue", f"--- ISSUE {issue.id}: {issue.title} ---\n{issue.body}", ""),
             ("acceptance", issue.acceptance_check, "--- ACCEPTANCE CHECK ---"),
             ("prd", prd_sections, "--- REFERENCED PRD SECTIONS ---"),

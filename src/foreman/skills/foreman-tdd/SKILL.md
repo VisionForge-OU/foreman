@@ -4,7 +4,7 @@ description: Stack-agnostic test-driven development loop for a single Foreman is
   Implements one vertical slice with strict red-green-refactor (one test at a time,
   never horizontal slicing) using the foreman-test wrapper, saves completion evidence,
   then emits a machine-readable FOREMAN-SUMMARY block Foreman parses.
-foreman_skill_version: 2
+foreman_skill_version: 3
 ---
 
 # foreman-tdd
@@ -133,7 +133,8 @@ single JSON object on the schema below. Nothing after it.
   "evidence": ["test.log", "acceptance.log"],
   "open_concerns": ["anything you are unsure about"],
   "escalate": false,
-  "escalation_question": ""
+  "escalation_question": "",
+  "request_more_turns": 0
 }
 ```
 ````
@@ -142,4 +143,10 @@ single JSON object on the schema below. Nothing after it.
   non-empty for a completion claim; Foreman rejects an empty/unbacked claim.
 - `escalate: true` + a non-empty `escalation_question` means you could not finish
   safely and need a human decision; set it instead of guessing.
+- `request_more_turns: N` (a small positive integer) means you are making real
+  progress but cannot finish this slice within your turn budget. Set it INSTEAD of
+  letting Foreman cut you off, and do **not** also set `escalate`. Write your
+  progress.md handoff first. Foreman may grant a bounded extension and **resume this
+  same session** so you continue where you left off. Use `escalate` (not this) for
+  genuine blockers; leave this `0` when you finish normally.
 - `commands[*].passed` is your honest result; Foreman verifies independently.

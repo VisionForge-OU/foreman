@@ -139,6 +139,8 @@ class AgentRunner:
             transcript = transcript_path.open("w")
 
         agen = self.backend.run(spec).__aiter__()
+        next_task: Optional["asyncio.Future"] = None
+        cancel_task: Optional["asyncio.Future"] = None
         try:
             while True:
                 if cancel_event is not None and cancel_event.is_set():
@@ -222,7 +224,17 @@ class AgentRunner:
                     record.terminal_reason = event.terminal_reason or terminal
                     break
         finally:
-            await agen.aclose()
+            # If we're unwinding while a step is still in flight (e.g. the run was
+            # cancelled mid-`__anext__` during app shutdown), drain it first —
+            # otherwise aclose() raises "asynchronous generator is already running".
+            if next_task is not None and not next_task.done():
+                await _drain(next_task)
+            if cancel_task is not None and not cancel_task.done():
+                cancel_task.cancel()
+            try:
+                await agen.aclose()
+            except RuntimeError:
+                pass  # generator already finishing — nothing left to close
             if transcript is not None:
                 transcript.close()
 

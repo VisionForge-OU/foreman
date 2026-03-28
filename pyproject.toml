@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "foreman-orchestrator"
-version = "0.2.0"
+version = "0.4.0"
 description = "A Boris-style agentic orchestrator TUI that supervises headless Claude Code agents through a gated plan→ADR/PRD→issues→TDD→e2e delivery pipeline."
 readme = "README.md"
 requires-python = ">=3.11"
