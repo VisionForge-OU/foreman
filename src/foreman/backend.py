@@ -73,6 +73,12 @@ class AgentBackend(Protocol):
         ...
 
 
+# Max bytes for a single stream-json line read from the ``claude`` subprocess. The
+# asyncio default is 64 KiB; one event (big tool result / diff / file read) can blow
+# past that, so we give the reader 64 MiB of headroom.
+_STREAM_LIMIT = 64 * 1024 * 1024
+
+
 class ClaudeBackend:
     """Spawns the real ``claude`` CLI (R1).
 
@@ -101,10 +107,24 @@ class ClaudeBackend:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=env,
+            # A single stream-json event (a large tool result, a big diff, a file read)
+            # routinely exceeds asyncio's default 64 KiB line buffer, which would raise
+            # ``ValueError: ... chunk is longer than limit`` and kill the run. Give the
+            # reader plenty of headroom.
+            limit=_STREAM_LIMIT,
         )
         try:
             assert proc.stdout is not None
-            async for raw in proc.stdout:
+            while True:
+                try:
+                    raw = await proc.stdout.readline()
+                except ValueError:
+                    # An event line still exceeded the (large) buffer limit. asyncio has
+                    # already dropped it from the buffer — skip it and keep reading the
+                    # rest of the stream rather than crashing the whole run.
+                    continue
+                if not raw:
+                    break
                 event = parse_line(raw.decode("utf-8", errors="replace"))
                 if event is not None:
                     yield event

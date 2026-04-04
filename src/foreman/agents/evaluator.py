@@ -50,12 +50,15 @@ class Verdict:
 
     @property
     def is_pass(self) -> bool:
-        """Merge-worthy: explicit pass, no objections, every rubric score >= min."""
-        return (
-            self.verdict == PASS
-            and not self.objections
-            and self.lowest >= self.min_score
-        )
+        """Merge-worthy: the evaluator explicitly returned ``pass`` and no rubric
+        dimension is below the minimum.
+
+        Objections listed alongside a ``pass`` verdict are ADVISORY (nits/suggestions),
+        not blocking — the ``verdict`` field is the evaluator's decision. Requiring an
+        empty ``objections`` list here used to reject a clear ``pass`` that merely noted
+        a nitpick, bouncing it into an endless builder↔evaluator loop. A genuinely
+        blocking concern must be expressed as ``verdict: objections``."""
+        return self.verdict == PASS and self.lowest >= self.min_score
 
     def feedback(self) -> str:
         """The objection text handed to the next (fresh) builder on a bounce."""
@@ -119,6 +122,11 @@ def build_prompt(
     return (
         "You are running headless as the read-only foreman-evaluator agent. Grade "
         "this one completed issue and emit exactly one foreman-verdict/v1 JSON block.\n\n"
+        "Ground your verdict in the CURRENT state of the worktree and the diff below. "
+        "Start from the diff, then read the files it touches. Before objecting that a "
+        "file is missing, duplicated, or wrong, OPEN it and confirm — do not object "
+        "from the issue text or a stale assumption (the worker may have already fixed "
+        "it). Reserve `objections` for blocking defects; pass on a clean slice.\n\n"
         f"You may read the full worktree at: {worktree}\n"
         f"Evidence the worker saved is under: {evidence_dir} (artifacts: {arts})\n\n"
         f"--- ISSUE {issue.id}: {issue.title} ---\n{issue.body}\n\n"

@@ -1,5 +1,74 @@
 # Changelog
 
+## 0.4.6
+
+### Fixed
+- **Run errored with `ValueError: ... chunk is longer than limit`.** Foreman reads the
+  `claude` subprocess output line by line, but asyncio's default stream buffer is only
+  64 KiB — a single large stream-json event (a big tool result, a file read, a large
+  diff — common for the evaluator) overflowed it and killed the run. The reader now
+  uses a 64 MiB limit and, as a backstop, skips an over-limit line and keeps reading
+  instead of crashing the whole run.
+
+
+## 0.4.5
+
+### Fixed
+- **TUI crash rendering worker logs with brackets** (`MarkupError: Expected markup
+  value …`). Worker log lines are raw agent output (shell commands) and routinely
+  contain an unbalanced `[` (e.g. a truncated `if [ -f …`). They were passed straight
+  to `Static.update()`, which parses content as Textual markup, so an unclosed bracket
+  crashed the Workers screen. All agent/file-derived text shown in the TUI (worker log,
+  global log, status bar, escalation detail, doc open-questions/digest) is now escaped;
+  intentional markup is preserved.
+
+
+## 0.4.4
+
+### Changed
+- **Evaluator grounds its verdict in the current worktree (→ agent v3).** Investigating
+  a stuck issue showed the evaluator objecting to "remove duplicate file X" that the
+  worker had *already removed* — it over-explored (read 10+ files), ran out of turns,
+  and the turn-extension resume emitted the verdict from stale context. (The worker and
+  evaluator worktrees were verified identical — same cwd — so this was a grading-accuracy
+  issue, not a worktree mismatch.) The evaluator now starts from the diff, reads only the
+  files it touches, and must confirm a file's CURRENT state before objecting about it.
+  Re-run `foreman init` in a target repo to pick up the improved evaluator agent.
+
+
+## 0.4.3
+
+### Fixed
+- **Endless builder↔evaluator loop: a `pass` verdict with a noted nit was rejected.**
+  `Verdict.is_pass` required an *empty* objections list, so when the evaluator returned
+  `verdict: "pass"` but listed a minor suggestion, Foreman treated it as a failure and
+  bounced the work to a fresh builder — which the evaluator then re-nitpicked, forever.
+  `is_pass` now trusts the `verdict` field (objections on a `pass` are advisory) and
+  keeps the rubric-score guardrail. The evaluator agent prompt (→ v2) was also
+  recalibrated: pass when the acceptance check passes and every dimension ≥ 3/5;
+  reserve `objections` for concrete, blocking defects, not stylistic nitpicks.
+  Re-run `foreman init` in a target repo to pick up the improved evaluator agent.
+
+## 0.4.2
+
+### Fixed
+- **Crash after answering an escalation when you navigate away.** The "resume" runs in
+  a background worker; when it finished it called `refresh_escs()`, which queried the
+  `#elist` widget. If the resume outlived the Attention screen (long resume + you left
+  the screen), the widget was gone → `NoMatches` crashed the app. `refresh_escs` now
+  bails if its widgets are gone (`is_mounted` is unreliable here), and the resume result
+  is surfaced via the app (which always outlives the screen).
+
+## 0.4.1
+
+### Fixed
+- **Attention screen: "Answer & resume" was bound to Enter, conflicting with the
+  answer box.** Enter is needed for newlines in the answer TextArea (and selection in
+  the escalation list), so submitting was ambiguous and unreliable depending on focus.
+  Submit is now **Ctrl+S** (a priority binding that works whether or not the answer box
+  is focused); Enter stays a plain newline. "Next escalation" moved from Tab to Ctrl+N
+  so Tab can move focus normally. The answer-box label shows the keys.
+
 ## 0.4.0
 
 ### Changed

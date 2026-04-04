@@ -684,3 +684,18 @@ async def test_evaluator_resumes_on_turn_kill_then_grades(tmp_path):
     assert iss1.status == IssueStatus.MERGED          # graded + merged, not escalated
     assert store.issue_verified(slug, "ISS-001")
     assert sessions[1] == "demo-evaluator"            # resumed the same evaluator session
+
+
+@pytest.mark.asyncio
+async def test_evaluator_pass_with_objections_merges_not_loops(tmp_path):
+    """A `pass` verdict carrying an advisory nit must merge, not bounce into a loop."""
+    from foreman.demo_scripts import make_evaluator_script
+    repo, store, slug = await _prepare_feature(tmp_path)
+    scripts = demo_scripts()
+    scripts["evaluator:ISS-001-eval"] = make_evaluator_script(
+        verdict="pass", objections=["nit: consider renaming a local"])
+    sched = _scheduler(store, _config(), scripts=scripts)
+    await sched.build(slug)
+    iss1 = store.load_issue(slug, "ISS-001")
+    assert iss1.status == IssueStatus.MERGED
+    assert store.issue_verified(slug, "ISS-001")

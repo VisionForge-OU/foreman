@@ -39,9 +39,11 @@ def test_pass_verdict_with_low_score_is_not_pass():
     assert not v.is_pass
 
 
-def test_pass_verdict_with_listed_objection_is_not_pass():
+def test_pass_verdict_with_advisory_objection_still_passes():
+    # A 'pass' verdict that notes a nit is advisory and still merge-worthy — the
+    # verdict field is the decision (blocking concerns must be verdict: objections).
     v = evaluator.parse(_verdict_json("pass", scores=5, objections=["edge case X"]))
-    assert not v.is_pass  # objections present override a 'pass'
+    assert v.is_pass
 
 
 def test_uncertain_verdict():
@@ -58,7 +60,7 @@ def test_parse_unparseable_returns_none():
 
 def test_packaged_agents_includes_evaluator():
     pkg = agents_installer.packaged_agents()
-    assert pkg.get("foreman-evaluator") == 1
+    assert pkg.get("foreman-evaluator") == 3
 
 
 def test_install_and_status_and_missing(tmp_path):
@@ -106,3 +108,19 @@ def test_extract_story_ref_pulls_user_stories():
 
 def test_extract_no_match_returns_empty():
     assert prd.extract_sections(PRD, ["PRD §Nonexistent"]) == ""
+
+
+def test_pass_with_advisory_objections_is_merge_worthy():
+    """A `pass` verdict that lists a minor nit must stay merge-worthy — requiring an
+    empty objections list bounced clear passes into an endless builder↔evaluator loop."""
+    from foreman.agents.evaluator import Verdict, RubricScore, PASS, OBJECTIONS
+
+    def mk(verdict, objections, low):
+        scores = {d: RubricScore(5) for d in ("functionality", "craft", "test_honesty")}
+        scores["prd_fidelity"] = RubricScore(low)
+        return Verdict(verdict=verdict, objections=objections, scores=scores, min_score=3)
+
+    assert mk(PASS, [], 4).is_pass is True
+    assert mk(PASS, ["nit: rename a var"], 4).is_pass is True   # advisory — does not block
+    assert mk(PASS, [], 2).is_pass is False                      # rubric-score guardrail
+    assert mk(OBJECTIONS, ["real bug"], 4).is_pass is False      # blocking verdict

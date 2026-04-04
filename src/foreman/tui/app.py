@@ -10,6 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
+from rich.markup import escape
 from rich.table import Table
 from rich.text import Text
 from textual.app import App, ComposeResult
@@ -121,12 +122,12 @@ class ReviewScreen(Screen):
         dwidget = self.query_one("#digest", Static)
         if digest:
             dwidget.update("[b]Decisions made on your behalf:[/b]\n"
-                           + "\n".join(f"  • {x}" for x in digest))
+                           + escape("\n".join(f"  • {x}" for x in digest)))
         else:
             dwidget.update("")
         md.update(d.body)
         if d.has_open_questions:
-            qs = "\n".join(f"  • {q}" for q in d.open_questions)
+            qs = escape("\n".join(f"  • {q}" for q in d.open_questions))
             oq.update(f"⚠ {len(d.open_questions)} OPEN QUESTION(S) — cannot approve until resolved:\n{qs}")
         else:
             oq.update("✓ No open questions — approvable.")
@@ -216,7 +217,10 @@ class WorkerScreen(Screen):
         body = self.query_one("#logbody", Static)
         if self.selected and self.selected in workers:
             w = workers[self.selected]
-            body.update(self._budget_bar(self.selected, w) + "\n" + "\n".join(w.lines[-300:]))
+            # The worker lines are raw agent output (shell commands etc.) and routinely
+            # contain unbalanced '[' — escape them so Textual doesn't parse them as markup.
+            body.update(self._budget_bar(self.selected, w) + "\n"
+                        + escape("\n".join(w.lines[-300:])))
         else:
             body.update("No active workers. Start a build from the dashboard ([b]b[/b]).")
 
@@ -253,8 +257,11 @@ class WorkerScreen(Screen):
 class AttentionScreen(Screen):
     BINDINGS = [
         Binding("escape", "app.pop_screen", "Back"),
-        Binding("enter", "resume", "Answer & resume"),
-        Binding("tab", "next", "Next"),
+        # Submit is Ctrl+S, NOT Enter: Enter must stay free for newlines in the answer
+        # box (and selection in the list). priority=True so it fires even while the
+        # TextArea has focus, so you can answer and submit without leaving the box.
+        Binding("ctrl+s", "resume", "Answer & resume", priority=True),
+        Binding("ctrl+n", "next", "Next escalation"),
     ]
     CSS = """
     #elist { height: 10; border: round $warning; }
@@ -271,7 +278,7 @@ class AttentionScreen(Screen):
         yield Label("Escalations needing your attention:")
         yield ListView(id="elist")
         yield Static(id="detail")
-        yield Label("Your answer:")
+        yield Label("Your answer (Enter = newline · [b]Ctrl+S[/b] to submit & resume):")
         yield TextArea(id="answer")
         yield Footer()
 
@@ -279,6 +286,11 @@ class AttentionScreen(Screen):
         self.refresh_escs()
 
     def refresh_escs(self) -> None:
+        # The resume worker calls this AFTER its (long) await, by which point the user
+        # may have navigated away and this screen been torn down. `is_mounted` is
+        # unreliable here, so check for the widget directly and bail if it's gone.
+        if not self.query("#elist"):
+            return
         escs = self.app.controller.escalations(self.slug)
         lv = self.query_one("#elist", ListView)
         lv.clear()
@@ -294,7 +306,7 @@ class AttentionScreen(Screen):
             detail.update("No escalations. 🎉")
             return
         path = self.app.controller.store.paths.escalation_file(self.slug, self.selected)
-        detail.update(path.read_text() if path.exists() else f"{self.selected}: (no detail)")
+        detail.update(escape(path.read_text()) if path.exists() else f"{self.selected}: (no detail)")
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         if event.item is None:
@@ -320,11 +332,13 @@ class AttentionScreen(Screen):
         slug, iid = self.slug, self.selected
 
         async def task():
+            # The resume can outlive this screen (the user may navigate away during it),
+            # so surface the result via the app (always alive); refresh_escs self-guards.
             try:
                 await self.app.controller.resume(slug, iid, answer)
-                self.notify(f"{iid} resumed")
+                self.app.notify(f"{iid} resumed")
             except Exception as e:
-                self.notify(str(e), severity="error")
+                self.app.notify(str(e), severity="error")
             self.refresh_escs()
 
         self.query_one("#answer", TextArea).text = ""
@@ -433,10 +447,10 @@ class DashboardScreen(Screen):
         act = c.activity
         if act is not None and act.running:
             ch = spin[self._tick % len(spin)]
-            sb.update(f"[b green]{ch} ACTIVE[/]  {c.status_line()}")
+            sb.update(f"[b green]{ch} ACTIVE[/]  {escape(c.status_line())}")
         else:
             last = c.global_log[-1] if c.global_log else "no activity yet — pick an action below"
-            sb.update(f"[dim]● idle[/dim]  {last}")
+            sb.update(f"[dim]● idle[/dim]  {escape(last)}")
 
     def _build_feature_list(self) -> None:
         lv = self.query_one("#flist", ListView)
@@ -473,7 +487,7 @@ class DashboardScreen(Screen):
         hint = self.query_one("#hint", Static)
         board = self.query_one("#board", Static)
         glog = self.query_one("#glogbody", Static)
-        glog.update("\n".join(c.global_log[-50:]))
+        glog.update(escape("\n".join(c.global_log[-50:])))
 
         if not slug:
             hint.update("No feature selected. Press [b]n[/b] to create one.")
