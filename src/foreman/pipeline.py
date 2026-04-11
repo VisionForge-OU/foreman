@@ -78,6 +78,10 @@ class Pipeline:
                 + ", ".join(missing)
                 + " — run `foreman init` to install them."
             )
+        # All present — refresh an OUTDATED copy in place (idempotent) so a Foreman
+        # upgrade doesn't force a manual `foreman init`. (A genuinely missing skill is
+        # still a hard error above, not silently reinstalled.)
+        vendored.install(self.store.paths.root)
 
     # ------------------------------------------------------------------ #
     # Internal spawn
@@ -168,7 +172,18 @@ class Pipeline:
         draft_path = self.store.paths.doc_draft_file(slug, "plan")
         draft_path.parent.mkdir(parents=True, exist_ok=True)
         draft_path.unlink(missing_ok=True)  # never read a previous run's draft
-        prompt = SkillInvocation.planner(state.request, slug, draft_path)
+        # On a revision, FEED the planner the prior plan + the reviewer's comment (like
+        # the grill loop) — don't rely on it incidentally finding .foreman/reviews/.
+        prev_body = existing.body if existing else None
+        review_comments = None
+        if existing is not None:
+            review = self.store.latest_review(slug, "plan", existing.version)
+            if review is not None and review.action == "request_changes":
+                review_comments = review.comments
+        prompt = SkillInvocation.planner(
+            state.request, slug, draft_path,
+            prev_body=prev_body, review_comments=review_comments,
+        )
         ctx = SpawnContext(
             kind="planner", label="planner", prompt=prompt,
             cwd=self.store.paths.root, model=self.config.model_planner, extra_dirs=[],

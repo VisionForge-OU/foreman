@@ -699,3 +699,72 @@ async def test_evaluator_pass_with_objections_merges_not_loops(tmp_path):
     iss1 = store.load_issue(slug, "ISS-001")
     assert iss1.status == IssueStatus.MERGED
     assert store.issue_verified(slug, "ISS-001")
+
+
+@pytest.mark.asyncio
+async def test_second_worker_for_locked_issue_does_not_clobber_worktree(tmp_path):
+    """A second _work_issue for an issue another worker already holds the lock on must
+    back off WITHOUT removing that worker's live worktree (the lock has to be taken
+    before the destructive create_issue_worktree)."""
+    import time
+    from foreman import locks
+    repo, store, slug = await _prepare_feature(tmp_path)
+    sched = _scheduler(store, _config())
+    await sched.worktrees.ensure_base()
+    integ = await sched.worktrees.integration_worktree()
+    # Worker A: holds a live lock and has a populated worktree.
+    locks.acquire(integ, "ISS-001", run_id="worker-A", now=time.time())
+    wt_a = await sched.worktrees.create_issue_worktree("ISS-001", "feature/x/iss-001")
+    (wt_a / "A_MARKER.txt").write_text("A is working here")
+
+    # Worker B grabs the same issue → must back off, leaving A's worktree intact.
+    issue = store.load_issue(slug, "ISS-001")
+    outcome = await sched._work_issue(slug, issue)
+    assert outcome == "blocked"
+    assert wt_a.exists() and (wt_a / "A_MARKER.txt").exists()
+
+
+@pytest.mark.asyncio
+async def test_worker_worktree_has_vendored_skill_and_agent(tmp_path):
+    """Issue worktrees are forked from the integration branch, which often lacks the
+    (untracked) vendored foreman-* skills/agents. The worker must still find the
+    foreman-tdd skill and the evaluator must find the foreman-evaluator agent — Foreman
+    provisions them into each worktree."""
+    repo, store, slug = await _prepare_feature(tmp_path)
+    seen = {}
+
+    def probe(spec):
+        seen["skill"] = (spec.cwd / ".claude/skills/foreman-tdd/SKILL.md").exists()
+        seen["agent"] = (spec.cwd / ".claude/agents/foreman-evaluator.md").exists()
+        return demo_scripts()["tdd"](spec)
+
+    scripts = demo_scripts()
+    scripts["tdd:ISS-001"] = probe
+    sched = _scheduler(store, _config(), scripts=scripts)
+    await sched.build(slug)
+    assert seen.get("skill") is True
+    assert seen.get("agent") is True
+
+
+@pytest.mark.asyncio
+async def test_build_auto_refreshes_outdated_vendored_files(tmp_path):
+    """After a Foreman upgrade the repo's vendored foreman-* skills/agents go stale
+    (status shows them outdated). A build should refresh them in place so you don't
+    have to re-run `foreman init` every upgrade."""
+    from foreman import vendored
+    from foreman.agents import installer as agents_installer
+    repo, store, slug = await _prepare_feature(tmp_path)
+    # Simulate a stale repo: downgrade the installed skill + agent version markers.
+    sm = repo / ".claude/skills/foreman-tdd/SKILL.md"
+    sm.write_text(sm.read_text().replace("foreman_skill_version: 3", "foreman_skill_version: 1"))
+    am = repo / ".claude/agents/foreman-evaluator.md"
+    am.write_text(am.read_text().replace("foreman_agent_version: 3", "foreman_agent_version: 1"))
+    assert vendored.installed_version(repo, "foreman-tdd") == 1
+    assert agents_installer.installed_version(repo, "foreman-evaluator") == 1
+
+    sched = _scheduler(store, _config())
+    await sched.build(slug)
+
+    assert vendored.installed_version(repo, "foreman-tdd") == vendored.packaged_skills()["foreman-tdd"]
+    assert agents_installer.installed_version(repo, "foreman-evaluator") == \
+        agents_installer.packaged_agents()["foreman-evaluator"]

@@ -1,5 +1,58 @@
 # Changelog
 
+## 0.4.10
+
+### Fixed
+- **Plan revise loop ignored the reviewer's comment (found in checkpoint H1).** When you
+  requested changes on a plan and re-ran the planner, `run_planner` rebuilt the prompt from
+  the *original* feature request only — it never passed the reviewer's comment or the prior
+  plan (unlike the grill loop). It appeared to work because the planner happened to read
+  `.foreman/reviews/` while exploring the repo, but that's incidental and unreliable. The
+  planner now receives the prior plan + the latest `request_changes` comment, is told to
+  address every comment and keep earlier requirements, and appends a `## Changelog`.
+
+
+## 0.4.9
+
+### Changed
+- **Vendored skills/agents auto-refresh — no more manual `foreman init` after an
+  upgrade.** After upgrading Foreman, a target repo's `.claude/skills/foreman-*` and
+  `.claude/agents/foreman-*` go stale (status shows `[outdated]` with a ✗). Builds and
+  pipeline phases now bring those Foreman-owned files current in place (idempotent;
+  they're git-excluded so they don't touch your history). A genuinely *missing* required
+  skill is still a hard error (not silently reinstalled). Outdated never blocked a build —
+  it was only a stale status — but you no longer have to re-init each upgrade.
+
+
+## 0.4.8
+
+### Fixed
+- **`foreman-tdd skill is not registered` (worker then went `stuck`).** Issue worktrees
+  are forked from the integration branch, which usually does NOT have the vendored
+  `foreman-*` skills/agents committed — `foreman init` installs them into the repo's
+  working tree, but they're typically left untracked, so a fresh worktree had no
+  `.claude/skills/`. The worker couldn't load `foreman-tdd` (and the evaluator couldn't
+  run as `foreman-evaluator`), floundered, and got killed for no progress. Foreman now
+  provisions the vendored skills + agents into each issue worktree, git-excluded
+  (`.claude/skills/foreman-*`, `.claude/agents/foreman-*`) so they never leak into a
+  merge. (Earlier cheaper models silently ignored the skill and coded directly; stricter
+  models correctly errored.)
+
+
+## 0.4.7
+
+### Fixed
+- **`working directory does not exist … (worktree creation may have failed)` during a
+  run.** `_work_issue` created the issue worktree *before* taking the per-issue lock,
+  and the worktree path is shared per issue id. When a second worker grabbed the same
+  issue (a resume overlapping a build, or two builds), its `create_issue_worktree`
+  removed and recreated the **live** worker's worktree, then removed it again on
+  backoff — so the first worker's evaluator (or worker) found its cwd gone. The lock is
+  now acquired **before** any worktree work, so a second worker backs off cleanly and
+  the live worktree is never touched. (Worktree/hook setup failures release the lock
+  too, so it can't leak.)
+
+
 ## 0.4.6
 
 ### Fixed

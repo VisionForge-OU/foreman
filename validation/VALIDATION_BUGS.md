@@ -38,6 +38,26 @@ Each entry: repro, expected, actual, severity, fix-forward (if any).
 
 ## Bugs
 
+### B2 — Plan revise loop never feeds the reviewer's comment to the planner (H1) — major — **FIXED**
+- **Found during:** CHECKPOINT H1 (live TUI), on `add-tagging-to-notes`. Reviewer requested
+  "add color field" on plan v1 and "add a status field (active/archive)" on v3; the revised plans
+  did include them (v3: 94 "color" mentions; v4: 48 status mentions), so it *looked* correct.
+- **Bug:** `run_planner` builds the revision prompt from `state.request` ONLY — it does not pass the
+  reviewer's comment or the prior plan (unlike `run_grill`, which takes `review_comments` + `prev_bodies`).
+  `request_changes` records the review but never updates the request. Transcripts confirm the planner only
+  consumed the comments **by accident** — it incidentally read `.foreman/features/*/reviews/plan-v*-review.md`
+  and `plan.md` while "exploring the repository" (run `478122` hit `reviews/` 7×). A planner that didn't
+  explore `.foreman/` would silently ignore the comment and re-emit a plan from the original request.
+- **Secondary:** the planner rewrites the plan wholesale each revision rather than accumulating — "color"
+  dropped from 94 (v3) to 1 (v4) once the v3 comment shifted focus to "status". No `## Changelog` was ever
+  appended to a plan (the grill loop appends one for ADR/PRD; the planner did not).
+- **Severity:** major (the plan revise loop's core promise — "the revision consumes your comment" — was
+  unreliable, working only via incidental file discovery).
+- **Fix applied (`pipeline.py` + `skill_invocation.py`):** `run_planner` now feeds the prior plan body +
+  the latest `request_changes` comment into `SkillInvocation.planner(prev_body=, review_comments=)`, which
+  instructs the planner to address ALL comments, keep prior requirements, and append a `## Changelog`.
+  Regression test `test_planner_revision_feeds_reviewer_comment_and_prior_plan`.
+
 ### B1 — Crash recovery does not reconcile an orphaned `in_progress` issue (F11) — major — **FIXED**
 - **Repro:** `~/foreman-validation/harness/run_f11.py` — prepare a 2-issue feature (ISS-002 depends on
   ISS-001), build with ISS-002's worker blocked; once ISS-001 is fully **merged** on disk, `SIGKILL -9`

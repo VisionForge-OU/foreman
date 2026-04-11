@@ -25,6 +25,7 @@ from . import (
     locks, notify as notify_mod, prd, vendored,
 )
 from .agents import evaluator as evaluator_mod
+from .agents import installer as agents_installer
 from .retro import metrics as metrics_mod
 from .backend import AgentBackend, RunSpec
 from .context import distiller, initializer
@@ -189,10 +190,24 @@ class Scheduler:
     # ------------------------------------------------------------------ #
     async def build(self, slug: str) -> BuildReport:
         self._precheck(slug)
+        # Keep the repo's vendored foreman-* skills/agents current (idempotent): after a
+        # Foreman upgrade they go stale, and re-running `foreman init` by hand every time
+        # is pure friction. These are Foreman-owned and git-excluded (below), so refresh
+        # them in place. The worker/evaluator also get the packaged copies in each
+        # worktree, but the auditor/e2e run in the integration worktree (the repo).
+        refreshed = (vendored.install(self.store.paths.root)
+                     + agents_installer.install(self.store.paths.root))
+        if refreshed:
+            self._log(f"refreshed vendored skills/agents: {', '.join(refreshed)}")
         await self.worktrees.ensure_base()
         integ = await self.worktrees.integration_worktree()
         # WS4.2: keep the lock dir out of git, and reclaim any dead workers' locks.
         git_ops.ensure_excluded(self.store.paths.root, "current_tasks/")
+        # Keep the Foreman-provisioned skills/agents (installed into each worktree so
+        # the worker/evaluator can find them) out of `git add -A`, so they never leak
+        # into a merge. Scoped to the foreman-* names — the user's own .claude is untouched.
+        git_ops.ensure_excluded(self.store.paths.root, ".claude/skills/foreman-*")
+        git_ops.ensure_excluded(self.store.paths.root, ".claude/agents/foreman-*")
         reclaimed = locks.reclaim_stale(integ)
         if reclaimed:
             self._log(f"reclaimed stale task lock(s): {', '.join(reclaimed)}")
@@ -305,26 +320,41 @@ class Scheduler:
         janitor_kind: Optional[str] = None,
     ) -> str:
         branch = issue.branch or f"feature/{slug}/{issue.id.lower()}"
-        cancel = asyncio.Event()
-        self._cancels[issue.id] = cancel
-        self.store.update_issue_status(slug, issue.id, IssueStatus.IN_PROGRESS, branch=branch)
-        wt = await self.worktrees.create_issue_worktree(issue.id, branch)
-        commands = self.config.commands
-        # WS1.3/1.5: install the per-worktree deny hook + foreman-test wrapper.
-        hookinst = hooks.install(
-            wt, test_command=self.config.command("test"), worker_id=issue.id
-        )
-        # WS4.2: take a crash-safe per-issue lock (second defence after footprints).
+        # WS4.2: take the crash-safe per-issue lock FIRST — before any destructive
+        # worktree work. The issue worktree path is shared per issue id, so a second
+        # worker for the same issue (a resume overlapping a build, or two builds) must
+        # back off here rather than clobbering the live worker's worktree via
+        # create_issue_worktree (which removes + recreates that path).
         integ = await self.worktrees.integration_worktree()
         lock_run = f"{issue.id}-{self._run_id_clock()}"
         if not locks.acquire(integ, issue.id, run_id=lock_run):
             self._log(f"{issue.id}: task lock held by a live worker — backing off")
             self.store.update_issue_status(slug, issue.id, IssueStatus.QUEUED)
             self._lock_blocked.add(issue.id)  # don't re-dispatch this build (no spin)
-            await self.worktrees.remove(wt)
-            hooks.cleanup(wt)
-            self._cancels.pop(issue.id, None)
             return "blocked"
+        cancel = asyncio.Event()
+        self._cancels[issue.id] = cancel
+        self.store.update_issue_status(slug, issue.id, IssueStatus.IN_PROGRESS, branch=branch)
+        try:
+            wt = await self.worktrees.create_issue_worktree(issue.id, branch)
+            # The worktree is forked from the integration branch, which usually does NOT
+            # have the (often-untracked) vendored foreman-* skills/agents committed — so
+            # the worker couldn't find the `foreman-tdd` skill and the evaluator couldn't
+            # run as `foreman-evaluator`. Provision them into each worktree; they're
+            # git-excluded (see build()) so they never leak into the merge.
+            vendored.install(wt)
+            agents_installer.install(wt)
+            # WS1.3/1.5: install the per-worktree deny hook + foreman-test wrapper.
+            hookinst = hooks.install(
+                wt, test_command=self.config.command("test"), worker_id=issue.id
+            )
+        except BaseException:
+            # Don't leak the per-issue lock if worktree/hook setup fails (it now runs
+            # AFTER acquiring the lock, so a setup failure must release it).
+            locks.release(integ, issue.id)
+            self._cancels.pop(issue.id, None)
+            raise
+        commands = self.config.commands
         eval_bounces = 0  # WS2: count evaluator objections to detect repeated disagreement
         # WS3.3: carry a distilled failure report + handoff across fresh retries.
         failure_report = ""

@@ -181,3 +181,34 @@ async def test_planner_resumes_on_turn_kill(repo):
     assert "Implementation Plan" in plan.body
     assert len(sessions) == 2             # initial + one resume
     assert sessions[1] == "demo-planner"  # resumed the SAME session
+
+
+@pytest.mark.asyncio
+async def test_planner_revision_feeds_reviewer_comment_and_prior_plan(repo):
+    """The plan revise loop must FEED the reviewer's comment + the prior plan to the
+    planner — not rely on it incidentally discovering .foreman/reviews/ while exploring."""
+    from foreman.demo_scripts import _init, _result, _assistant
+    counter = itertools.count(1)
+    store = FileStore(repo, clock=lambda: f"2026-01-01T00:00:{next(counter):02d}Z")
+    slug = store.create_feature("Add tagging", "Notes can carry tags via the API.")
+    captured = {}
+
+    async def planner_script(spec):
+        captured["prompt"] = spec.prompt
+        draft = store.paths.doc_draft_file(slug, "plan")
+        draft.parent.mkdir(parents=True, exist_ok=True)
+        draft.write_text("# Plan\n\nORIGINAL PLAN BODY")
+        yield _init(spec)
+        yield _assistant(text="wrote plan")
+        yield _result()
+
+    rc = itertools.count(1)
+    pipe = Pipeline(store, Config(), MockBackend({"planner": planner_script}),
+                    run_id_clock=lambda: f"r{next(rc):04d}")
+    await pipe.run_planner(slug)                                    # v1
+    store.request_changes(slug, "plan", reviewer="rev",
+                          comments="add a color field to each tag")
+    await pipe.run_planner(slug)                                    # v2 revision
+
+    assert "add a color field to each tag" in captured["prompt"]   # comment fed
+    assert "ORIGINAL PLAN BODY" in captured["prompt"]              # prior plan fed

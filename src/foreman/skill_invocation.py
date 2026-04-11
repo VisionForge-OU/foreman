@@ -37,20 +37,42 @@ class SkillInvocation:
     """Builds the ``-p`` prompt for each pipeline phase."""
 
     @staticmethod
-    def planner(request: str, slug: str, plan_path: Path) -> str:
+    def planner(
+        request: str, slug: str, plan_path: Path, *,
+        prev_body: Optional[str] = None, review_comments: Optional[str] = None,
+    ) -> str:
         # The planner uses no vendored skill — it is a deep, high-effort plan.
-        return (
-            f"{HEADLESS_PREAMBLE}\n\n"
+        parts = [
+            HEADLESS_PREAMBLE,
+            "",
             "You are a senior staff engineer. Produce a DEEP implementation plan "
             "for the feature request below, grounded in this repository. First "
             "explore the codebase to understand the current architecture, domain "
             "language (CONTEXT.md if present) and prior decisions (docs/adr/). Then "
             "write a thorough plan: goals, approach, the modules/seams involved, "
-            "data and interface changes, risks, sequencing, and testing strategy.\n\n"
+            "data and interface changes, risks, sequencing, and testing strategy.",
+            "",
             f"Write the plan as markdown to this exact path (body only, no YAML "
-            f"frontmatter): {plan_path}\n\n"
-            f"--- FEATURE REQUEST ---\n{request}\n"
-        )
+            f"frontmatter): {plan_path}",
+            "",
+            f"--- FEATURE REQUEST ---\n{request}",
+        ]
+        if prev_body:
+            parts.append(
+                "\n--- YOUR PRIOR PLAN (revise it; keep everything that still applies, "
+                "do not drop earlier requirements) ---\n" + prev_body
+            )
+        if review_comments:
+            parts.append(
+                "\n--- REVIEWER COMMENTS on the prior plan — you MUST address ALL of "
+                "them in this revision ---\n" + review_comments
+            )
+        if prev_body or review_comments:
+            parts.append(
+                "\nEnd the plan with a '## Changelog' section: one bullet per revision "
+                "saying what changed and which reviewer comment drove it."
+            )
+        return "\n".join(parts)
 
     @staticmethod
     def grill(

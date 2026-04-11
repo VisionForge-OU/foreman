@@ -130,7 +130,7 @@ remains is **agent quality + TUI ergonomics**, which is not judgeable headlessly
 | Item | Status | Machinery already covered by |
 |------|--------|------------------------------|
 | Scenario A real-agent plan→PRD→issues→build→e2e | NOT-TESTABLE-HEADLESSLY | demo (mock); `headless.py` path exists |
-| H1 plan revise loop (changelog + version bump) | NOT-TESTABLE-HEADLESSLY | state.py write_doc versioning; demo revise |
+| H1 plan revise loop (consume comment / version bump / approve) | **PASS** (live, w/ **B2** found+fixed) | add-tagging plan v1→v4: 2 request_changes cycles, version bumped each, comment consumed (color→status), approval only at revised version. Finding **B2**: comment reached the planner only by incidental `.foreman/reviews/` discovery — now fed explicitly + changelog instruction added. |
 | H2 grill open-questions gate + decisions digest | NOT-TESTABLE-HEADLESSLY | `approve_doc` blocks on open Qs (state.py:235); demo |
 | H3 queue review (checks + conflict graph) | NOT-TESTABLE-HEADLESSLY | F2 acceptance gate; F8 conflict graph |
 | H4 parallel worktrees + budget meters + report | NOT-TESTABLE-HEADLESSLY | `test_two_independent…`; demo; F6 budgets |
