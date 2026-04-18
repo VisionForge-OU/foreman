@@ -127,6 +127,19 @@ def approve(store, name: str, reviewer: str = "reviewer") -> StoredProposal:
     return load(store, name)
 
 
+def reject(store, name: str, reviewer: str = "reviewer") -> Optional[StoredProposal]:
+    """Reject a proposal: it can never land (kept for the audit trail, not deleted)."""
+    path = store.paths.retro_proposal_file(name)
+    if not path.exists():
+        return None
+    doc = frontmatter.parse(path.read_text())
+    doc.meta["status"] = "rejected"
+    doc.meta["reviewer"] = reviewer
+    doc.meta.pop("body_sha256", None)
+    path.write_text(frontmatter.serialize(doc.meta, doc.body))
+    return load(store, name)
+
+
 def attach_bench(store, name: str, report: bench_mod.BenchReport) -> Path:
     path = store.paths.retro_bench_file(name)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -147,6 +160,18 @@ def _bench_report(store, name: str):
         return json.loads(path.read_text())
     except (json.JSONDecodeError, OSError):
         return None
+
+
+def bench_report(store, name: str):
+    """The attached bench report dict for a proposal (None if none attached)."""
+    return _bench_report(store, name)
+
+
+def list_names(store) -> list[str]:
+    """All proposal names on disk, sorted (newest-numbered last)."""
+    if not store.paths.retro_dir.exists():
+        return []
+    return sorted(p.stem for p in store.paths.retro_dir.glob("*.md"))
 
 
 def land(store, name: str) -> str:

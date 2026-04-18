@@ -7,6 +7,7 @@ from foreman.cost import CostModel, Price
 from foreman.models import Budget
 from foreman.runner import (
     AgentRunner, COMPLETED, KILLED_TURNS, KILLED_COST, KILLED_TIMEOUT, KILLED_USER,
+    KILLED_STUCK,
 )
 from foreman.stream_parser import StreamEvent
 
@@ -155,3 +156,26 @@ async def test_cancel_midflight_drains_cleanly_no_aclose_error():
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
+
+
+@pytest.mark.asyncio
+async def test_mcp_tool_activity_is_not_killed_as_stuck():
+    """A worker that follows the user's env and edits/runs via MCP equivalents
+    (e.g. lean-ctx ctx_edit/ctx_shell) is actively working — not 'stuck'."""
+    events = [init_event()]
+    for i in range(20):
+        events.append(assistant_event(tool_uses=[("mcp__lean-ctx__ctx_edit", f"t{i}", {"path": "app/x.py"})]))
+    events.append(result_event())
+    result = await run_with(events, Budget(max_turns=100), stuck_turns=12)
+    assert result.record.terminal_reason != "killed_stuck"
+
+
+@pytest.mark.asyncio
+async def test_pure_rumination_is_still_killed_stuck():
+    """The guard still fires on a worker that calls NO tools for stuck_turns turns."""
+    events = [init_event()]
+    for i in range(15):
+        events.append(assistant_event(text=f"hmm let me think about step {i}"))  # no tool calls
+    events.append(result_event())
+    result = await run_with(events, Budget(max_turns=100), stuck_turns=12)
+    assert result.record.terminal_reason == KILLED_STUCK

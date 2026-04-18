@@ -150,9 +150,13 @@ class ReviewScreen(Screen):
         if not comments:
             self.notify("Add a comment first", severity="warning")
             return
-        self.app.controller.request_changes(self.slug, self.kind, comments)
+        created = self.app.controller.request_changes(self.slug, self.kind, comments)
         self.query_one("#comments", TextArea).text = ""
-        self.notify(f"changes requested on {self.kind}; re-run grill/planner to revise")
+        if created:  # H6: an amendment rejection spun off concrete fix issues
+            self.notify(f"amendment rejected — created {len(created)} fix issue(s) "
+                        f"({', '.join(created)}); press b to build")
+        else:
+            self.notify(f"changes requested on {self.kind}; re-run grill/planner to revise")
         self.refresh_doc()
 
 
@@ -389,6 +393,106 @@ class MetricsScreen(Screen):
         self.query_one("#metrics", Static).update("\n".join(parts))
 
 
+class RetroScreen(Screen):
+    """WS6.2/6.3 / H7: review gated retro patch proposals.
+
+    Lists every proposal in ``.foreman/retro/``, shows the selected one's diff +
+    rationale + attached bench delta, and enforces the landing gate: a patch lands
+    only with human approval AND a bench report (``foreman bench``). Generation
+    (``foreman retro``) and benchmarking (``foreman bench``) stay on the CLI — both
+    are long, token-spending agent runs — but the review/approve/reject/land gate
+    lives here so the human side of the flywheel is driveable from the TUI.
+    """
+
+    BINDINGS = [
+        Binding("escape", "app.pop_screen", "Back"),
+        Binding("a", "approve", "Approve"),
+        Binding("r", "reject", "Reject"),
+        Binding("l", "land", "Land"),
+        Binding("tab", "next", "Next"),
+    ]
+    CSS = """
+    #plist { width: 38; border-right: solid $accent; }
+    #pbody { height: 1fr; }
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.selected: Optional[str] = None
+
+    def compose(self) -> ComposeResult:
+        yield Header()
+        with Horizontal():
+            yield ListView(id="plist")
+            with VerticalScroll():
+                yield Static(id="pbody")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        self.refresh_props()
+
+    def refresh_props(self) -> None:
+        if not self.query("#plist"):
+            return
+        props = self.app.controller.retro_proposals()
+        lv = self.query_one("#plist", ListView)
+        lv.clear()
+        for sp in props:
+            seal = "✓" if sp.sealed else " "
+            lv.append(ListItem(
+                Label(f"{seal} {sp.name} [{sp.status}] {sp.proposal.target}"), name=sp.name))
+        names = [sp.name for sp in props]
+        if self.selected not in names:
+            self.selected = names[0] if names else None
+        self._show()
+
+    def _show(self) -> None:
+        body = self.query_one("#pbody", Static)
+        if not self.selected:
+            body.update("No retro proposals. Run [b]foreman retro[/b] to generate some.")
+            return
+        body.update(escape(self.app.controller.proposal_detail(self.selected)))
+
+    def on_list_view_selected(self, event: ListView.Selected) -> None:
+        if event.item is None:
+            return
+        self.selected = event.item.name
+        self._show()
+
+    def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
+        if event.item is not None and event.item.name:
+            self.selected = event.item.name
+            self._show()
+
+    def action_next(self) -> None:
+        lv = self.query_one("#plist", ListView)
+        n = len(lv.children)
+        if n:
+            lv.index = ((lv.index or 0) + 1) % n
+
+    def _act(self, fn, ok_msg: Optional[str] = None) -> None:
+        if not self.selected:
+            self.notify("No proposal selected", severity="warning")
+            return
+        try:
+            result = fn(self.selected)
+            self.notify(ok_msg or str(result))
+        except Exception as e:  # the gate surfaces here (not approved / no bench)
+            self.notify(str(e), severity="error")
+        self.refresh_props()
+
+    def action_approve(self) -> None:
+        self._act(self.app.controller.approve_proposal,
+                  f"{self.selected} approved — attach a bench report, then land")
+
+    def action_reject(self) -> None:
+        self._act(self.app.controller.reject_proposal, f"{self.selected} rejected")
+
+    def action_land(self) -> None:
+        # land_proposal returns the landing message; let it through as the notify.
+        self._act(self.app.controller.land_proposal)
+
+
 class DashboardScreen(Screen):
     BINDINGS = [
         Binding("n", "new_feature", "New"),
@@ -401,6 +505,7 @@ class DashboardScreen(Screen):
         Binding("w", "workers", "Workers"),
         Binding("x", "attention", "Attention"),
         Binding("m", "metrics", "Metrics"),
+        Binding("t", "retro", "Retro"),
         Binding("comma", "settings", "Settings"),
         Binding("q", "app.quit", "Quit"),
     ]
@@ -511,17 +616,36 @@ class DashboardScreen(Screen):
                 if d and d.status.value in ("in_review", "changes_requested"):
                     hint_text += f"\n  {kind}: {c.review_badges(slug, kind)} [{d.status.value}]"
         hint.update(hint_text)
-        board.update(self._kanban(st))
+        if st.phase == Phase.QUEUE_REVIEW:
+            board.update(escape(c.queue_review_text(slug)))
+        else:
+            board.update(self._kanban(st))
 
-    def _kanban(self, st) -> Table:
+    def _kanban(self, st):
         cols = [IssueStatus.QUEUED, IssueStatus.IN_PROGRESS, IssueStatus.TESTS_FAILING,
                 IssueStatus.NEEDS_HUMAN, IssueStatus.DONE, IssueStatus.MERGED]
-        table = Table(title="Issue board", expand=True)
-        for col in cols:
-            table.add_column(col.value, ratio=1)
         buckets = {col: [] for col in cols}
         for i in st.issues:
             buckets.setdefault(i.status, []).append(i.id)
+
+        # The dashboard's right pane is narrow at the default 80-column terminal
+        # size. A six-column table truncates every issue id to "ISS-…", so use a
+        # compact list until there is enough space for readable columns.
+        right_pane_width = max(self.size.width - 34, 0)
+        if right_pane_width < 72:
+            lines = ["Issue board"]
+            if not st.issues:
+                lines.append("  (no issues)")
+            else:
+                for col in cols:
+                    ids = buckets.get(col) or []
+                    if ids:
+                        lines.append(f"  {col.value}: {', '.join(ids)}")
+            return "\n".join(lines)
+
+        table = Table(title="Issue board", expand=True)
+        for col in cols:
+            table.add_column(col.value, ratio=1)
         height = max((len(v) for v in buckets.values()), default=0)
         for r in range(height):
             row = [("\n".join(buckets[col][r:r+1]) if r < len(buckets[col]) else "") for col in cols]
@@ -601,6 +725,9 @@ class DashboardScreen(Screen):
 
     def action_metrics(self) -> None:
         self.app.push_screen(MetricsScreen(self.app.current_slug))
+
+    def action_retro(self) -> None:
+        self.app.push_screen(RetroScreen())
 
 
 class ForemanTUI(App):

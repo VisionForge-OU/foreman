@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.4.12
+
+### Fixed
+- **Worker could bypass the verification.json/issue-file deny hook via MCP tools.** The
+  PreToolUse deny hook (WS1.3 trust boundary) only matched native `Write|Edit|MultiEdit|
+  NotebookEdit|Bash`, so a worker that follows the user's environment and edits via an
+  MCP tool (e.g. lean-ctx `ctx_edit`) or runs shells via `ctx_shell` was never seen by
+  the hook — it could write Foreman-owned files. The hook matcher now also covers
+  `mcp__*`, and `deny_protected.py` matches by tool-input *shape* (a path + write
+  markers, or a command) rather than by native tool name, so MCP edits/shells to
+  protected paths are denied while reads and unprotected writes are allowed. Verified
+  end-to-end: a real worker's `ctx_edit` of `verification.json` is blocked.
+
+
+## 0.4.11
+
+### Fixed
+- **False `stuck: no file/test progress` when the worker uses MCP tools.** The stuck
+  detector only counted native `{Edit, Write, MultiEdit, NotebookEdit, Bash, Skill}` as
+  progress. A worker that follows the user's environment and edits/runs via MCP
+  equivalents (e.g. lean-ctx `ctx_edit` / `ctx_shell` / `ctx_read`) was seen as idle and
+  killed after `stuck_turns` turns despite actively working. Any `mcp__*` tool call now
+  counts as progress; pure rumination (no tool calls) is still caught.
+
+
 ## 0.4.10
 
 ### Fixed

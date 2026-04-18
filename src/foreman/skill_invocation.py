@@ -89,7 +89,9 @@ class SkillInvocation:
             "Grill the APPROVED plan below against this codebase and its domain "
             "model. Write an ADR draft and a PRD draft (the PRD per the "
             "foreman-to-prd template). Each draft MUST begin with an "
-            "'## Open questions for reviewer' section.\n"
+            "'## Open questions for reviewer' section followed by a "
+            "'## Decisions made on your behalf' digest (use a `_None ...` line "
+            "if there were no non-obvious judgment calls).\n"
             f"Write the ADR draft (body only) to: {adr_path}\n"
             f"Write the PRD draft (body only) to: {prd_path}\n"
         )

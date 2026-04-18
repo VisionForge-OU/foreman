@@ -77,6 +77,11 @@ ADR_BODY = """\
 
 _None — all questions resolved from the codebase and prior decisions._
 
+## Decisions made on your behalf
+
+- Reused the existing item record rather than adding an event log.
+- Kept completion state as a boolean because the CLI has no multi-state workflow.
+
 ## Decision
 We mark completion by setting a boolean `completed` flag on the existing todo
 item rather than introducing a separate completion event log. The cost of an
@@ -89,6 +94,11 @@ PRD_BODY_V1 = """\
 ## Open questions for reviewer
 
 - Should completing an already-completed item be an error or a silent no-op?
+
+## Decisions made on your behalf
+
+- Kept `todo done <id>` as a separate verb rather than overloading `todo add`.
+- Scoped the first slice to the store and CLI happy path before adding polish.
 
 ## Problem Statement
 Users can add and list todos but cannot mark them done.

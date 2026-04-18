@@ -69,6 +69,7 @@ class BuildReport:
     blocked: list[str] = field(default_factory=list)
     janitor: list[tuple[str, str, str]] = field(default_factory=list)  # (id, kind, outcome)
     total_cost_usd: float = 0.0
+    retries: int = 0   # total retry attempts across feature issues (beyond first try)
     e2e: Optional[str] = None
     audit: Optional[str] = None  # WS5.1: satisfied | amendment_drafted(n) | ...
     stopped_reason: str = ""
@@ -86,6 +87,7 @@ class BuildReport:
             lines.append("- Janitor passes:")
             lines += [f"    - {iid} ({kind}): {outcome}" for iid, kind, outcome in self.janitor]
         lines.append(f"- Total cost: ${self.total_cost_usd:.4f}")
+        lines.append(f"- Retries: {self.retries}   ·   Escalations: {len(self.escalated)}")
         if self.e2e:
             lines.append(f"- E2E: {self.e2e}")
         if self.audit:
@@ -168,7 +170,10 @@ class Scheduler:
                     f"required agent(s) missing: {', '.join(missing_agents)} — run `foreman init`"
                 )
         state = self.store.load_feature(slug)
+        adr = state.doc("adr")
         prd = state.doc("prd")
+        if adr is None or adr.status != DocStatus.APPROVED:
+            raise SchedulerError("ADR is not approved — cannot start the build")
         if prd is None or prd.status != DocStatus.APPROVED:
             raise SchedulerError("PRD is not approved — cannot start the build")
         if not state.queue_confirmed:
@@ -310,6 +315,7 @@ class Scheduler:
                 report.escalated.append((i.id, reason))
             elif i.status in (IssueStatus.QUEUED, IssueStatus.TESTS_FAILING):
                 report.blocked.append(i.id)
+        report.retries = sum(i.attempts for i in state.issues if not i.is_janitor)
         report.total_cost_usd = self.feature_cost(slug)
 
     # ------------------------------------------------------------------ #
@@ -1043,3 +1049,62 @@ class Scheduler:
             "raw_text": final_text[:2000],
         }
         path.write_text(json.dumps(payload, indent=2) + "\n")
+
+    def _load_latest_audit(self, slug: str):
+        """The most recent parseable audit report on disk (None if none)."""
+        import json
+        rdir = self.store.paths.runs_dir(slug)
+        if not rdir.exists():
+            return None
+        for path in sorted(rdir.glob("*/audit.json"), reverse=True):
+            try:
+                rep = audit_mod.report_from_raw(json.loads(path.read_text()))
+            except (json.JSONDecodeError, OSError):
+                continue
+            if rep is not None:
+                return rep
+        return None
+
+    def reject_amendment(self, slug: str, comments: str = "") -> list[str]:
+        """Reject an auto-drafted PRD amendment (WS5.1, H6).
+
+        The reviewer is saying *the spec is right; the code diverged* — so the
+        approved PRD stands and each divergence becomes a concrete, buildable fix
+        issue instead of a silent drop. Returns the new issue ids. A no-op (returns
+        ``[]``) when the current PRD carries no amendment or no audit can be found,
+        so the caller can fall back to an ordinary ``request_changes``.
+        """
+        state = self.store.load_feature(slug)
+        prd_doc = state.doc("prd")
+        if prd_doc is None or audit_mod.AMENDMENT_HEADING not in prd_doc.body:
+            return []
+        rep = self._load_latest_audit(slug)
+        if rep is None:
+            return []
+        bodies = audit_mod.fix_issue_bodies(rep)
+        if not bodies:
+            return []
+        # Record the rejection for the audit trail.
+        self.store.request_changes(
+            slug, "prd", reviewer="reviewer",
+            comments=comments or "rejected PRD amendment → fix issues",
+        )
+        # The approved spec stands: strip the amendment section and re-seal the PRD.
+        original = prd_doc.body.split(audit_mod.AMENDMENT_HEADING)[0].rstrip() + "\n"
+        self.store.write_doc(slug, "prd", original, status=DocStatus.IN_REVIEW)
+        self.store.approve_doc(slug, "prd", "reviewer")
+        # Spin off the fix issues (queued, with a runnable acceptance check so the
+        # WS1.1 gate lets them build; unknown footprint ⇒ they run alone, safely).
+        test_cmd = (self.config.command("test") or "").strip() or "true"
+        existing = sum(1 for i in state.issues if i.id.startswith("FIX-"))
+        created: list[str] = []
+        for n, b in enumerate(bodies, start=existing + 1):
+            iid = f"FIX-{n:03d}"
+            self.store.write_issue(slug, Issue(
+                id=iid, title=b["title"], status=IssueStatus.QUEUED,
+                body=b["body"], acceptance_check=test_cmd,
+            ))
+            created.append(iid)
+        self.store.seed_verification(slug)  # Default-FAIL entries for the new issues
+        self._log(f"rejected PRD amendment → created fix issue(s): {', '.join(created)}")
+        return created

@@ -90,8 +90,8 @@ the task context. Encapsulated so the mechanism is fixable in one place if Claud
 (reviewer, timestamp, sha256 of the *body at approval time*). On every load we recompute the
 body hash; if it differs from the recorded approval hash, the approval is auto-invalidated and
 status reverts to `in_review` (R3). Approval is therefore a pure function of file contents —
-fully crash-safe (R4). Nothing in Phase B may start unless `prd.md` is `approved` AND the
-queue has been explicitly confirmed (R3/§6/§12).
+fully crash-safe (R4). Nothing in Phase B may start unless both `adr.md` and `prd.md`
+are `approved` AND the queue has been explicitly confirmed (R3/§6/§12).
 
 ## 5. Issues & traceability (§5)
 Issue files carry the §5 frontmatter (`id, title, status, depends_on, branch, attempts,
@@ -365,8 +365,12 @@ worktree (`--agent foreman-auditor`, read-only, `model_auditor`/Haiku, reusing t
 budget), only when every feature issue has landed; (b) `needs_amendment` is **divergences only** —
 a `diverged` finding drafts a *deterministic* PRD amendment (`audit.build_amendment`, appends a
 `## PRD Amendment` section, never edits the original) written as a new `IN_REVIEW` PRD version that
-auto-invalidates the prior approval at load (R3) ⇒ it re-enters the hash-sealed gate; an
-`unimplemented` finding maps to `fix_issue_bodies`; (c) `notify_command` is best-effort (env + arg
+auto-invalidates the prior approval at load (R3) ⇒ it re-enters the hash-sealed gate;
+**rejecting** that amendment (request-changes on a PRD carrying the `## PRD Amendment` heading) is
+*not* a silent drop — `scheduler.reject_amendment` reloads the persisted audit, keeps the approved
+spec (strips the amendment section + re-seals), and turns every diverged/unimplemented finding into a
+queued, buildable `FIX-NNN` issue via `fix_issue_bodies` (wired through `controller.request_changes`
+and the TUI ReviewScreen, so the human reject is one keystroke); (c) `notify_command` is best-effort (env + arg
 payload, 15s timeout, never raises) fired via `notify.fire` from the sync `_escalate` and on the
 amendment draft; (d) review-v2 diff is computed against a **body snapshot taken at the reviewer's
 last action** (`reviews/<kind>-v<n>-body.md`), since `write_doc` keeps only the latest body — first
@@ -393,7 +397,12 @@ proposal under `.foreman/retro/`, body-sha256 approval that auto-invalidates on 
 (`retro.is_landable`); a landed skill patch bumps the **target repo's installed** skill (never
 Foreman's packaged distribution) and appends `SKILL_CHANGELOG.md`; (d) `foreman bench` is mocked by
 default (no tokens; the injected `runner_factory` replays), real-token mode (`--real`) bounded by
-`bench_cost_ceiling_usd` with skipped cases **logged, never silently capped**.
+`bench_cost_ceiling_usd` with skipped cases **logged, never silently capped**; (e) the human side of
+the gate is driveable from the TUI **RetroScreen** (`t` from the dashboard) — list proposals, inspect
+the diff + attached bench delta, and approve / reject / land, with the landing gate surfaced as a
+notify error; generation (`foreman retro`) and benchmarking (`foreman bench`) stay on the CLI since
+both are long, token-spending agent runs. The build **report** (`report.md`) summarises cost,
+**retries** (Σ feature-issue attempts), and escalations so the post-build numbers are scannable.
 
 ## P2.4 Deviations from the Phase-2 prompt (with rationale)
 - **WS3.2 handoff enforced Foreman-side, not via a Stop hook** — a headless `-p` Stop hook can't

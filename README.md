@@ -72,10 +72,12 @@ foreman --version
    A draft with open questions **cannot** be approved. Editing an approved doc
    automatically invalidates its approval (a SHA-256 of the body is checked on
    every load).
-5. **Slice** — once the PRD is approved, `foreman-to-issues` breaks it into small,
-   dependency-ordered, vertically-sliced issue files with PRD traceability.
-6. **Confirm the queue** — the final gate. Nothing downstream runs until you
-   confirm.
+5. **Slice** — once the ADR and PRD are both approved, `foreman-to-issues` breaks
+   the PRD into small, dependency-ordered, vertically-sliced issue files with PRD
+   traceability.
+6. **Confirm the queue** — the final gate. The queue view shows each issue's
+   runnable `acceptance_check`, `touches`, `prd_refs`, dependencies, and conflict
+   graph. Nothing downstream runs until you confirm.
 
 ### Phase B — the autonomous build loop ("Boris loop")
 

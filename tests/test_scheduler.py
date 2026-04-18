@@ -75,11 +75,33 @@ async def test_build_completes_both_issues(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_report_includes_retries_count(tmp_path):
+    """H4: the final report surfaces retries alongside cost and escalations."""
+    repo, store, slug = await _prepare_feature(tmp_path)
+    scripts = demo_scripts(fail_first_issue="ISS-001")  # ISS-001 retries once
+    sched = _scheduler(store, _config(), scripts=scripts)
+    report = await sched.build(slug)
+    assert report.retries >= 1
+    rendered = report.render()
+    assert "Retries:" in rendered
+    assert "Total cost:" in rendered  # cost + escalations already present
+
+
+@pytest.mark.asyncio
 async def test_build_requires_queue_confirmation(tmp_path):
     repo, store, slug = await _prepare_feature(tmp_path)
     store.unconfirm_queue(slug)
     sched = _scheduler(store, _config())
     with pytest.raises(SchedulerError):
+        await sched.build(slug)
+
+
+@pytest.mark.asyncio
+async def test_build_requires_approved_adr_even_if_queue_confirmed(tmp_path):
+    repo, store, slug = await _prepare_feature(tmp_path)
+    store.write_doc(slug, "adr", "# ADR changed after review")
+    sched = _scheduler(store, _config())
+    with pytest.raises(SchedulerError, match="ADR is not approved"):
         await sched.build(slug)
 
 

@@ -56,6 +56,8 @@ async def test_grill_open_questions_loop(repo):
     store.approve_doc(slug, "plan", "arash")
 
     adr, prd = await pipe.run_grill(slug)
+    assert "Decisions made on your behalf" in adr.body
+    assert "Decisions made on your behalf" in prd.body
     # PRD v1 has an open question -> cannot approve.
     assert prd.has_open_questions
     with pytest.raises(ValueError):
@@ -73,6 +75,107 @@ async def test_grill_open_questions_loop(repo):
 
 
 @pytest.mark.asyncio
+async def test_grill_revision_feeds_comments_for_adr_and_prd(repo):
+    """H2: reviewer answers on both grill docs must reach the next grill pass."""
+    from foreman.demo_scripts import _assistant, _init, _result
+
+    counter = itertools.count(1)
+    store = FileStore(repo, clock=lambda: f"2026-01-01T00:00:{next(counter):02d}Z")
+    slug = store.create_feature("todo done", "Add a done command")
+    store.write_doc(slug, "plan", "# Approved plan")
+    store.approve_doc(slug, "plan", "arash")
+    prompts = []
+
+    async def grill_script(spec):
+        prompts.append(spec.prompt)
+        adr = store.paths.doc_draft_file(slug, "adr")
+        prd = store.paths.doc_draft_file(slug, "prd")
+        adr.parent.mkdir(parents=True, exist_ok=True)
+        yield _init(spec)
+        if len(prompts) == 1:
+            adr.write_text(
+                "# ADR\n\n"
+                "## Open questions for reviewer\n\n"
+                "- Which persistence tradeoff should we choose?\n\n"
+                "## Decisions made on your behalf\n\n"
+                "- Kept the API shape from the plan.\n"
+            )
+            prd.write_text(
+                "# PRD\n\n"
+                "## Open questions for reviewer\n\n"
+                "- Should duplicate tags be rejected or deduplicated?\n\n"
+                "## Decisions made on your behalf\n\n"
+                "- Kept the feature scoped to tags only.\n"
+            )
+        else:
+            adr.write_text(
+                "# ADR\n\n"
+                "## Open questions for reviewer\n\n"
+                "_None - reviewer chose in-memory persistence._\n\n"
+                "## Decisions made on your behalf\n\n"
+                "- Kept the API shape from the plan.\n\n"
+                "## Changelog\n\n"
+                "- Resolved persistence tradeoff from reviewer comment.\n"
+            )
+            prd.write_text(
+                "# PRD\n\n"
+                "## Open questions for reviewer\n\n"
+                "_None - reviewer chose deduplication._\n\n"
+                "## Decisions made on your behalf\n\n"
+                "- Kept the feature scoped to tags only.\n\n"
+                "## Changelog\n\n"
+                "- Resolved duplicate-tag behavior from reviewer comment.\n"
+            )
+        yield _assistant(text="wrote grill docs")
+        yield _result()
+
+    rc = itertools.count(1)
+    pipe = Pipeline(store, Config(), MockBackend({"grill": grill_script}),
+                    run_id_clock=lambda: f"r{next(rc):04d}")
+
+    adr1, prd1 = await pipe.run_grill(slug)
+    assert adr1.has_open_questions
+    assert prd1.has_open_questions
+
+    store.request_changes(slug, "adr", "arash", "Use in-memory persistence for this demo.")
+    store.request_changes(slug, "prd", "arash", "Deduplicate duplicate tags silently.")
+    adr2, prd2 = await pipe.run_grill(slug)
+
+    assert "Use in-memory persistence for this demo." in prompts[-1]
+    assert "Deduplicate duplicate tags silently." in prompts[-1]
+    assert adr2.version == 2 and prd2.version == 2
+    assert not adr2.has_open_questions
+    assert not prd2.has_open_questions
+    assert "## Changelog" in adr2.body
+    assert "## Changelog" in prd2.body
+
+    store.approve_doc(slug, "adr", "arash")
+    store.approve_doc(slug, "prd", "arash")
+    st = store.load_feature(slug)
+    assert st.doc("adr").status == DocStatus.APPROVED
+    assert st.doc("prd").status == DocStatus.APPROVED
+
+
+@pytest.mark.asyncio
+async def test_slicer_requires_both_adr_and_prd_approved(repo):
+    pipe, store = make_pipeline(repo)
+    slug = store.create_feature("todo done", "Add a done command")
+    await pipe.run_planner(slug)
+    store.approve_doc(slug, "plan", "arash")
+    await pipe.run_grill(slug)
+    store.request_changes(slug, "prd", "arash", "no-op")
+    await pipe.run_grill(slug)
+    store.approve_doc(slug, "prd", "arash")
+
+    assert store.load_feature(slug).phase == Phase.DOC_REVIEW
+    with pytest.raises(PipelineError, match="ADR is not approved"):
+        await pipe.run_slicer(slug)
+
+    store.approve_doc(slug, "adr", "arash")
+    assert store.load_feature(slug).phase == Phase.SLICING
+
+
+@pytest.mark.asyncio
 async def test_slicer_emits_schema_valid_issues(repo):
     pipe, store = make_pipeline(repo)
     slug = store.create_feature("todo done", "Add a done command")
@@ -82,6 +185,7 @@ async def test_slicer_emits_schema_valid_issues(repo):
     # Resolve open q and approve prd.
     store.request_changes(slug, "prd", "arash", "no-op")
     await pipe.run_grill(slug)
+    store.approve_doc(slug, "adr", "arash")
     store.approve_doc(slug, "prd", "arash")
 
     issues = await pipe.run_slicer(slug)

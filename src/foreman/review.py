@@ -75,6 +75,8 @@ def decisions_digest(body: str) -> list[str]:
                 continue
             if content:
                 out.append(content)
+        elif stripped and stripped not in {"---", "***", "___"}:
+            out.append(stripped)
     return out
 
 

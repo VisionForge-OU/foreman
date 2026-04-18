@@ -10,7 +10,7 @@ from foreman.config import Config
 from foreman.demo_scripts import demo_scripts, make_auditor_script
 from foreman.installer import init_repo
 from foreman.ledger import CostLedger
-from foreman.models import DocStatus
+from foreman.models import DocStatus, IssueStatus, Phase
 from foreman.sample import create_sample_repo, pytest_command
 from foreman.scheduler import Scheduler
 from foreman.state import FileStore
@@ -69,6 +69,60 @@ async def test_auditor_divergence_drafts_prd_amendment(tmp_path):
     assert "amendment_drafted" in (report.audit or "")
     # The audit was persisted.
     assert any(p.name == "audit.json" for p in store.paths.runs_dir(slug).glob("*/audit.json"))
+
+
+@pytest.mark.asyncio
+async def test_reject_amendment_spins_off_fix_issues(tmp_path):
+    """H6: rejecting an auto-drafted PRD amendment turns the divergence into a
+    concrete, buildable fix issue (not a silent drop) and keeps the approved spec."""
+    repo, store, slug = await _prepare(tmp_path)
+    scripts = demo_scripts()
+    scripts["auditor"] = make_auditor_script(requirements=[
+        {"requirement": "Re-completing is a no-op", "status": "diverged",
+         "evidence": "todo/store.py", "note": "actually raises on re-complete"},
+    ])
+    cfg = _config(); cfg.e2e_enabled = True
+    sched = _sched(store, cfg, scripts=scripts)
+    await sched.build(slug)
+    prd = store.load_feature(slug).doc("prd")
+    assert prd.status == DocStatus.IN_REVIEW and "PRD Amendment" in prd.body
+
+    created = sched.reject_amendment(slug, "the spec is right; fix the code")
+    assert created, "rejecting an amendment must create fix issue(s)"
+
+    state = store.load_feature(slug)
+    fix = [i for i in state.issues if i.id in created]
+    assert fix and all(i.status == IssueStatus.QUEUED for i in fix)
+    # Each fix issue must be buildable (WS1.1: a runnable acceptance check).
+    assert all(i.acceptance_check.strip() for i in fix)
+    # The approved spec stands: the amendment is dropped and the PRD re-sealed.
+    prd2 = state.doc("prd")
+    assert prd2.status == DocStatus.APPROVED and "PRD Amendment" not in prd2.body
+    # The feature drops back into BUILDING so the fix issues can run.
+    assert state.phase == Phase.BUILDING
+
+
+@pytest.mark.asyncio
+async def test_rejected_amendment_fix_issue_builds_and_merges(tmp_path):
+    """H6 end-to-end: after rejecting an amendment, the spun-off fix issue builds
+    and merges on the next build pass."""
+    repo, store, slug = await _prepare(tmp_path)
+    scripts = demo_scripts()
+    scripts["auditor"] = make_auditor_script(requirements=[
+        {"requirement": "Re-completing is a no-op", "status": "diverged",
+         "evidence": "todo/store.py", "note": "raises on re-complete"},
+    ])
+    cfg = _config(); cfg.e2e_enabled = False
+    sched = _sched(store, cfg, scripts=scripts)
+    await sched.build(slug)
+    created = sched.reject_amendment(slug)
+    assert created
+
+    # Re-build (default auditor = all satisfied) → the fix issue lands.
+    sched2 = _sched(store, _config())
+    report = await sched2.build(slug)
+    assert set(created) <= set(report.merged)
+    assert store.load_feature(slug).issue(created[0]).status == IssueStatus.MERGED
 
 
 @pytest.mark.asyncio

@@ -80,6 +80,17 @@ def parse(text: str) -> Optional[AuditReport]:
     return None
 
 
+def report_from_raw(obj: dict[str, Any]) -> Optional[AuditReport]:
+    """Rebuild an :class:`AuditReport` from a persisted ``audit.json`` dict.
+
+    The on-disk audit (``runs/<id>/audit.json``) stores the raw ``foreman-audit/v1``
+    payload. Returns None for an absent/unparseable payload (no ``requirements``).
+    """
+    if not isinstance(obj, dict) or not obj.get("requirements"):
+        return None
+    return _from_dict(obj)
+
+
 def _from_dict(obj: dict[str, Any]) -> AuditReport:
     findings: list[AuditFinding] = []
     for r in (obj.get("requirements", []) or []):

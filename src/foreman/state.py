@@ -424,15 +424,17 @@ class FileStore:
         def approved(d: Optional[GatedDoc]) -> bool:
             return d is not None and d.status == DocStatus.APPROVED
 
+        docs_approved = approved(adr) and approved(prd)
+
         # Build / done states first.
-        if approved(prd) and state.queue_confirmed and state.issues:
+        if docs_approved and state.queue_confirmed and state.issues:
             statuses = {i.status for i in state.issues}
             if statuses <= {IssueStatus.DONE, IssueStatus.MERGED}:
                 return Phase.DONE
             return Phase.BUILDING
-        if approved(prd) and state.issues and not state.queue_confirmed:
+        if docs_approved and state.issues and not state.queue_confirmed:
             return Phase.QUEUE_REVIEW
-        if approved(prd) and not state.issues:
+        if docs_approved and not state.issues:
             return Phase.SLICING
         if approved(plan) and (adr is not None or prd is not None):
             return Phase.DOC_REVIEW

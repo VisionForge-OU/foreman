@@ -251,6 +251,57 @@ class Controller:
         per = [metrics.load_feature_metrics(self.store, s) for s in self.store.list_features()]
         return metrics.trend(per)
 
+    # ------------------------------------------------------------------ #
+    # Retro proposals (WS6.2/6.3 / H7) — the patch-approval flywheel surface
+    # ------------------------------------------------------------------ #
+    def retro_proposals(self):
+        """All gated retro proposals on disk (for the TUI review screen)."""
+        from ..retro import driver
+        out = []
+        for name in driver.list_names(self.store):
+            sp = driver.load(self.store, name)
+            if sp is not None:
+                out.append(sp)
+        return out
+
+    def retro_proposal(self, name: str):
+        from ..retro import driver
+        return driver.load(self.store, name)
+
+    def proposal_bench_text(self, name: str) -> str:
+        from ..retro import driver
+        rep = driver.bench_report(self.store, name)
+        if not rep:
+            return "Bench: (none attached — required before landing; run `foreman bench`)"
+        return (f"Bench: success_rate={rep.get('success_rate')}  "
+                f"mean_turns={rep.get('mean_turns')}  "
+                f"cases={len(rep.get('results') or [])}")
+
+    def proposal_detail(self, name: str) -> str:
+        """Status + bench delta + the sealed review body (diff + rationale) — H7."""
+        from .. import frontmatter
+        path = self.store.paths.retro_proposal_file(name)
+        if not path.exists():
+            return f"{name}: (no such proposal)"
+        sp = self.retro_proposal(name)
+        seal = " · sealed" if (sp and sp.sealed) else ""
+        head = f"[{sp.status if sp else '?'}{seal}]  target: {sp.proposal.target if sp else '?'}\n"
+        body = frontmatter.parse(path.read_text()).body
+        return head + self.proposal_bench_text(name) + "\n\n" + body
+
+    def approve_proposal(self, name: str):
+        from ..retro import driver
+        return driver.approve(self.store, name)
+
+    def reject_proposal(self, name: str):
+        from ..retro import driver
+        return driver.reject(self.store, name)
+
+    def land_proposal(self, name: str) -> str:
+        """Land an approved+benched proposal; raises ValueError if the gate fails."""
+        from ..retro import driver
+        return driver.land(self.store, name)
+
     def review_badges(self, slug: str, kind: str) -> str:
         """WS5.2: read-time + word-delta triage badges for a doc awaiting review."""
         from .. import review
@@ -295,6 +346,33 @@ class Controller:
             lines.append(f"  ⚠ unknown footprint (runs alone): {', '.join(unknown)}")
         for a, b in edges[:8]:
             lines.append(f"  {a} ↔ {b}")
+        isolated = sorted(i.id for i in issues if not graph.get(i.id))
+        if isolated:
+            lines.append(f"  no overlaps: {', '.join(isolated)}")
+        return "\n".join(lines)
+
+    def queue_review_text(self, slug: str) -> str:
+        """Queue-review detail: schema-critical fields plus the conflict graph."""
+        issues = [i for i in self.feature(slug).issues if not i.is_janitor]
+        if not issues:
+            return "Queue review\n  (no issues)"
+
+        lines = ["Queue review"]
+        for issue in issues:
+            deps = ", ".join(issue.depends_on) if issue.depends_on else "(none)"
+            prd_refs = ", ".join(issue.prd_refs) if issue.prd_refs else "MISSING"
+            touches = ", ".join(issue.touches) if issue.touches else "MISSING"
+            check = issue.acceptance_check.strip() if issue.acceptance_check else "MISSING"
+            lines.extend([
+                f"{issue.id} — {issue.title}",
+                f"  depends_on: {deps}",
+                f"  acceptance_check: {check}",
+                f"  touches: {touches}",
+                f"  prd_refs: {prd_refs}",
+            ])
+        summary = self.conflict_summary(slug)
+        if summary:
+            lines.extend(["", summary])
         return "\n".join(lines)
 
     # ------------------------------------------------------------------ #
@@ -306,14 +384,26 @@ class Controller:
     def approve(self, slug: str, kind: str) -> None:
         self.store.approve_doc(slug, kind, reviewer="reviewer")
 
-    def request_changes(self, slug: str, kind: str, comments: str) -> None:
+    def request_changes(self, slug: str, kind: str, comments: str) -> Optional[list[str]]:
+        """Record a changes-requested review. Returns a list of new fix-issue ids
+        when this rejects an auto-drafted PRD amendment (WS5.1/H6), else None."""
         # WS5.2: snapshot the body the reviewer acted on, so the next draft can be
         # shown as a diff-since-last-review.
         doc = self.feature(slug).doc(kind)
         if doc is not None:
             self.store.paths.reviews_dir(slug).mkdir(parents=True, exist_ok=True)
             (self.store.paths.reviews_dir(slug) / f"{kind}-v{doc.version}-body.md").write_text(doc.body)
+        # WS5.1/H6: rejecting an auto-drafted PRD amendment is NOT a silent drop —
+        # it keeps the approved spec and spins the divergence(s) into fix issues.
+        from ..audit import AMENDMENT_HEADING
+        if kind == "prd" and doc is not None and AMENDMENT_HEADING in doc.body:
+            created = self.scheduler.reject_amendment(slug, comments)
+            if created:
+                self.log(f"rejected PRD amendment → created {len(created)} fix "
+                         f"issue(s): {', '.join(created)}")
+                return created
         self.store.request_changes(slug, kind, reviewer="reviewer", comments=comments)
+        return None
 
     def confirm_queue(self, slug: str) -> None:
         self.store.confirm_queue(slug)

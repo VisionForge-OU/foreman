@@ -21,7 +21,12 @@ from pathlib import Path
 from typing import Optional
 
 ASSETS = Path(__file__).resolve().parent / "assets"
-_FILE_MATCHER = "Write|Edit|MultiEdit|NotebookEdit|Bash"
+# Native file/command tools PLUS every MCP tool (mcp__*): a worker may follow the
+# user's environment and edit/run via MCP equivalents (lean-ctx ctx_edit / ctx_shell
+# instead of Edit / Bash), so the deny hook must see those too. (Verified: this regex
+# fires the PreToolUse hook for mcp__lean-ctx__ctx_shell.) deny_protected.py then
+# decides per call — MCP reads and unprotected writes are allowed.
+_FILE_MATCHER = "Write|Edit|MultiEdit|NotebookEdit|Bash|mcp__.*"
 
 
 @dataclass

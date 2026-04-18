@@ -42,8 +42,21 @@ KILLED_USER = "killed_user"
 KILLED_STUCK = "killed_stuck"
 ERROR = "error"
 
-# Tool names that count as the agent making real progress (file/command activity).
+# Native tool names that count as the agent making real progress (file/command
+# activity). MCP tools count too (see `_made_progress`): a worker that follows the
+# user's environment and edits/runs via MCP equivalents (e.g. lean-ctx ctx_edit /
+# ctx_shell instead of Edit / Bash) is still actively working, not stuck.
 _PROGRESS_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit", "Bash", "Skill"}
+
+
+def _made_progress(tool_uses) -> bool:
+    """A turn shows progress if it called a native file/command tool OR any MCP tool.
+    Pure rumination (no tool calls) and native read-only browsing still count as idle,
+    so a genuinely spinning worker is caught while an MCP-driven one is not killed."""
+    return any(
+        tu.name in _PROGRESS_TOOLS or tu.name.startswith("mcp__")
+        for tu in tool_uses
+    )
 
 EventCallback = Callable[[StreamEvent], None]
 
@@ -202,10 +215,7 @@ class AgentRunner:
                         break
                     # Stuck detection: consecutive turns with no progress tool use.
                     if stuck_turns:
-                        made_progress = any(
-                            tu.name in _PROGRESS_TOOLS for tu in event.tool_uses
-                        )
-                        idle_turns = 0 if made_progress else idle_turns + 1
+                        idle_turns = 0 if _made_progress(event.tool_uses) else idle_turns + 1
                         if idle_turns >= stuck_turns:
                             terminal = KILLED_STUCK
                             break

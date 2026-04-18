@@ -38,6 +38,95 @@ async def test_controller_demo_drives_pipeline(tmp_path):
     assert c.feature_cost(slug) > 0
 
 
+@pytest.mark.asyncio
+async def test_request_changes_on_prd_amendment_creates_fix_issues(tmp_path):
+    """H6: requesting changes on a PRD that carries an auto-drafted amendment
+    rejects the amendment and spins off fix issues (returns their ids)."""
+    import json
+
+    from foreman.audit import AMENDMENT_HEADING
+
+    c = Controller(tmp_path, demo=True)
+    slug = c.create_feature("Add done", "mark todos done")
+    c.store.write_doc(slug, "adr", "# ADR")
+    c.store.approve_doc(slug, "adr", "reviewer")
+    c.store.write_doc(
+        slug, "prd",
+        "# PRD\n\n## User Flows\n- complete a todo\n\n" + AMENDMENT_HEADING
+        + "\n\n1. **Re-complete is a no-op**\n   - Observed behaviour: raises\n",
+        status=DocStatus.IN_REVIEW,
+    )
+    audit_path = c.store.paths.run_audit(slug, "s0001")
+    audit_path.parent.mkdir(parents=True, exist_ok=True)
+    audit_path.write_text(json.dumps({
+        "schema": "foreman-audit/v1",
+        "requirements": [{"requirement": "Re-complete is a no-op", "status": "diverged",
+                          "evidence": "todo/store.py", "note": "raises on re-complete"}],
+    }))
+
+    created = c.request_changes(slug, "prd", "the spec is right; fix the code")
+    assert created, "amendment rejection must return the new fix-issue ids"
+    state = c.feature(slug)
+    assert [i for i in state.issues if i.id in created]
+    # The approved spec stands again; the amendment is gone.
+    assert state.doc("prd").status == DocStatus.APPROVED
+    assert AMENDMENT_HEADING not in state.doc("prd").body
+
+
+@pytest.mark.asyncio
+async def test_request_changes_on_ordinary_prd_does_not_create_issues(tmp_path):
+    """A normal request-changes (no amendment) stays the plain revise loop."""
+    c = Controller(tmp_path, demo=True)
+    slug = c.create_feature("Add done", "mark todos done")
+    c.store.write_doc(slug, "prd", "# PRD\n\nplain body\n", status=DocStatus.IN_REVIEW)
+    result = c.request_changes(slug, "prd", "please split the model change")
+    assert not result
+    assert c.feature(slug).doc("prd").status == DocStatus.CHANGES_REQUESTED
+    assert not c.feature(slug).issues
+
+
+@pytest.mark.asyncio
+async def test_controller_proposal_review_and_landing_gate(tmp_path):
+    """H7: the controller surfaces retro proposals and enforces the landing gate
+    (approval AND an attached bench report) for the TUI."""
+    from foreman.retro import bench, driver, retro as retro_mod
+
+    c = Controller(tmp_path, demo=True)
+    p = retro_mod.PatchProposal(target="skill:foreman-tdd", title="Forbid mocking the unit",
+                                rationale="clustered bounces", diff="add a line", version_bump=1)
+    name = driver.draft(c.store, [p])[0]
+
+    props = c.retro_proposals()
+    assert any(sp.name == name and sp.status == "in_review" for sp in props)
+    assert "Retro patch proposal" in c.proposal_detail(name)
+
+    with pytest.raises(ValueError):       # cannot land before approval
+        c.land_proposal(name)
+    c.approve_proposal(name)
+    assert c.retro_proposal(name).sealed
+    with pytest.raises(ValueError, match="bench"):  # cannot land without bench
+        c.land_proposal(name)
+
+    report = bench.BenchReport(results=[bench.BenchResult("c", "success_first_try", 0.0, 1, True)],
+                               success_rate=1.0, total_cost=0.0, mean_turns=1.0)
+    driver.attach_bench(c.store, name, report)
+    assert c.land_proposal(name).startswith("landed")
+
+
+@pytest.mark.asyncio
+async def test_controller_reject_proposal_blocks_landing(tmp_path):
+    """H7: a rejected proposal cannot land."""
+    from foreman.retro import driver, retro as retro_mod
+
+    c = Controller(tmp_path, demo=True)
+    name = driver.draft(c.store, [retro_mod.PatchProposal(
+        target="skill:foreman-tdd", title="t", rationale="r", diff="d")])[0]
+    c.reject_proposal(name)
+    assert c.retro_proposal(name).status == "rejected"
+    with pytest.raises(ValueError):
+        c.land_proposal(name)
+
+
 def test_status_line_tracks_phase_activity(tmp_path):
     """The status line reflects a running Phase-A agent: label, turns, last line."""
     from foreman.stream_parser import parse_event

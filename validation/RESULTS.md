@@ -3,7 +3,7 @@
 Status legend: **PASS** / **FAIL** / **PARTIAL** / **BLOCKED** / **NOT-TESTABLE-HEADLESSLY** / **PENDING**
 
 Target project: `~/foreman-validation/notesapi` (FastAPI notes service, 81 LOC, git on `main`).
-Foreman commit under test: `0afdf91` (Phase 1+2). Foreman test suite: **234 passed** (preflight).
+Foreman commit under test: `0afdf91` (Phase 1+2). Foreman test suite: **234 passed** (preflight) → **292 passed** after the H4–H7 checkpoint pass (fixes B5/B6/B7).
 Conductor notes: notesapi worker/planner model overridden to `claude-haiku-4-5` for cost; `typecheck`/`e2e` set null.
 
 ---
@@ -117,7 +117,7 @@ Harness: `~/foreman-validation/harness/step5.py`, `step54.py`; CLI `foreman retr
 | WS4.3 specialist janitor passes, gated | PASS | 5.1 |
 | WS5.1 spec-integrity auditor → PRD amendment re-enters review | PASS | 5.2; demo audit.json |
 | WS5 notify_command on review-needed/escalation | PASS | F12; 5.2 |
-| WS5 review DX (badges, read-time, decisions digest) | PENDING | `review.py`; needs live TUI (H1/H2) |
+| WS5 review DX (badges, read-time, decisions digest) | PASS | `review.py` + TUI regression: open-questions-first, decisions digest surfaced, `_None` digest retained; H2 paired ADR+PRD gate fixed as B3 |
 | WS6 outcome taxonomy + metrics pane | PASS (data) | 5.3; pane render = NOT-TESTABLE-HEADLESSLY |
 | WS6 retro proposals gated + bench delta | PASS | 5.4 |
 
@@ -131,12 +131,12 @@ remains is **agent quality + TUI ergonomics**, which is not judgeable headlessly
 |------|--------|------------------------------|
 | Scenario A real-agent plan→PRD→issues→build→e2e | NOT-TESTABLE-HEADLESSLY | demo (mock); `headless.py` path exists |
 | H1 plan revise loop (consume comment / version bump / approve) | **PASS** (live, w/ **B2** found+fixed) | add-tagging plan v1→v4: 2 request_changes cycles, version bumped each, comment consumed (color→status), approval only at revised version. Finding **B2**: comment reached the planner only by incidental `.foreman/reviews/` discovery — now fed explicitly + changelog instruction added. |
-| H2 grill open-questions gate + decisions digest | NOT-TESTABLE-HEADLESSLY | `approve_doc` blocks on open Qs (state.py:235); demo |
-| H3 queue review (checks + conflict graph) | NOT-TESTABLE-HEADLESSLY | F2 acceptance gate; F8 conflict graph |
-| H4 parallel worktrees + budget meters + report | NOT-TESTABLE-HEADLESSLY | `test_two_independent…`; demo; F6 budgets |
-| H5 escalation answer consumed on resume | PASS (machinery) / UX PENDING | F7 (`resume_issue` consumes answer) |
-| H6 reject PRD amendment → fix issues | PARTIAL (amendment PASS) / reject-UX PENDING | 5.2 (amendment re-enters review) |
-| H7 review one retro proposal end-to-end | PASS (machinery) / UX PENDING | 5.4 (gated proposal + bench landing gate) |
+| H2 grill open-questions gate + decisions digest | **PASS** (machinery + TUI, w/ **B3** found+fixed) | `approve_doc` blocks on open Qs; ReviewScreen surfaces open Qs + decisions digest for PRD and ADR; `state.py`/`pipeline.py`/`scheduler.py` now require both ADR and PRD approved before slicing/building. Evidence: `test_grill_open_questions_loop`, `test_grill_revision_feeds_comments_for_adr_and_prd`, `test_review_screen_blocks_approval_with_open_questions`, `test_doc_review_requires_both_adr_and_prd_approved`, `test_slicer_requires_both_adr_and_prd_approved`, `test_build_requires_approved_adr_even_if_queue_confirmed`; focused H2/TUI suite 74 passed. |
+| H3 queue review (checks + conflict graph) | **PASS** (machinery + TUI, w/ **B4** found+fixed) | persisted add-tagging issues all carry `prd_refs`, `touches`, and `acceptance_check`; queue screen now renders per-issue `depends_on`/`acceptance_check`/`touches`/`prd_refs` plus conflict graph with disjoint nodes. Evidence: `test_queue_review_shows_checks_touches_refs_graph_and_confirms`; focused H3 set 34 passed. |
+| H4 parallel worktrees + budget meters + report | **PASS** (machinery + report, w/ **B7** found+fixed) | `test_two_independent_issues_run_in_parallel` (asyncio.Barrier proves both in flight); dependent waits (`test_exhausted_retries_escalate` keeps ISS-002 QUEUED; `test_build_completes_both_issues` runs it after the dep merges); initializer-once; report has cost+escalations — **B7**: report now also surfaces **retries** (`test_report_includes_retries_count`). Live per-worker budget meters render headlessly via `controller.workers`. |
+| H5 escalation answer consumed on resume | **PASS** (machinery + TUI end-to-end) | F7 + new no-monkeypatch e2e: escalate → answer in `AttentionScreen` → real `controller.resume` → the answer reaches the **resumed worker's prompt** (new session) → issue merges (`test_attention_resume_consumes_answer_into_new_session`). |
+| H6 reject PRD amendment → fix issues | **PASS** (machinery + TUI, w/ **B5** found+fixed) | 5.2 drafts the amendment; **B5**: rejecting it was a silent drop — now `scheduler.reject_amendment` keeps the approved spec and spins each divergence into a queued buildable `FIX-NNN` issue, wired through `controller.request_changes` + the ReviewScreen. Evidence: `test_reject_amendment_spins_off_fix_issues`, `test_rejected_amendment_fix_issue_builds_and_merges`, `test_review_screen_reject_amendment_creates_fix_issues`. |
+| H7 review one retro proposal end-to-end | **PASS** (machinery + TUI, w/ **B6** found+fixed) | 5.4 gate machinery; **B6**: no TUI review path existed — added a **RetroScreen** (`t`) + controller surface + `driver.reject`, enforcing the approval+bench landing gate in the TUI. Evidence: `test_controller_proposal_review_and_landing_gate`, `test_controller_reject_proposal_blocks_landing`, `test_retro_screen_reviews_proposal_and_enforces_gate`, `test_dashboard_opens_retro_screen`. |
 
 _(Rows filled as steps execute. Phase 1 & Phase 2 acceptance-criterion grouping added at the end.)_
 
@@ -158,10 +158,15 @@ released, fresh worktree on re-dispatch). F11 now fully PASSES; regression test 
 Two minor init/CLI nits: **D2** (auto-detected `mypy` overreach) fixed via tool-availability gating; **D3**
 retracted as a measurement artifact (`foreman run` already exits 2 on halt).
 
-**Not yet exercised (require the live TUI + a human, real tokens):** the real-agent happy path (Scenario A)
-and the ergonomics/revise-loop checkpoints H1–H7. Machinery underneath each is validated on the mock backend;
-what remains is agent quality + UX, which can't be judged headlessly. Budget is fully intact ($0 spent) for these.
+**Human checkpoints H1–H7 — all PASS via TUI/controller integration tests, 7 bugs found+fixed.**
+H1–H3 (B2/B3/B4) earlier; H4–H7 this pass: **B5** (rejecting a PRD amendment was a silent drop instead of
+spinning off fix issues), **B6** (no TUI path to review/approve/reject/land a retro proposal — the WS6 gate
+was CLI-only), and **B7** (the build report omitted retries). H4's parallel/dependent/initializer machinery
+and H5's escalation→resume-consumes-answer flow were validated (the latter end-to-end through the real
+`AttentionScreen` → `controller.resume`, asserting the answer reaches the resumed worker's prompt). The
+real-agent happy path (Scenario A, real tokens) remains the only deferred item; budget intact ($0 spent).
 
 **Bottom line:** ready for dogfooding. No gate-integrity, verification-honesty, or data-corruption blockers
-remain — the one major finding (B1 crash recovery) was fixed and re-verified during this exercise. Only the
-real-agent happy path + TUI ergonomics (Scenario A / H1–H7) remain, deferred to the operator with budget intact.
+remain. The major findings (B1 crash recovery; B5 amendment-reject silent drop; B6 missing retro-review UI)
+were fixed and re-verified during this exercise (suite 292 passed). Only the real-agent happy path
+(Scenario A) remains, deferred to the operator with budget intact.

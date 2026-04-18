@@ -60,6 +60,10 @@ def test_cannot_approve_with_open_questions(store):
     with pytest.raises(ValueError):
         store.approve_doc(slug, "prd", reviewer="arash")
 
+    store.write_doc(slug, "adr", body)
+    with pytest.raises(ValueError):
+        store.approve_doc(slug, "adr", reviewer="arash")
+
 
 def test_request_changes_records_review_and_status(store):
     slug = store.create_feature("Feature X", "desc")
@@ -101,6 +105,8 @@ def test_phase_progression_to_building_requires_queue_confirmation(store):
     slug = store.create_feature("Feature X", "desc")
     store.write_doc(slug, "plan", "p")
     store.approve_doc(slug, "plan", "arash")
+    store.write_doc(slug, "adr", "adr body")
+    store.approve_doc(slug, "adr", "arash")
     store.write_doc(slug, "prd", "prd body")
     store.approve_doc(slug, "prd", "arash")
     store.write_issue(slug, Issue(id="ISS-001", title="a"))
@@ -112,8 +118,25 @@ def test_phase_progression_to_building_requires_queue_confirmation(store):
     assert store.load_feature(slug).phase == Phase.BUILDING
 
 
+def test_doc_review_requires_both_adr_and_prd_approved(store):
+    slug = store.create_feature("Feature X", "desc")
+    store.write_doc(slug, "plan", "p")
+    store.approve_doc(slug, "plan", "arash")
+    store.write_doc(slug, "adr", "adr body")
+    store.write_doc(slug, "prd", "prd body")
+    store.approve_doc(slug, "prd", "arash")
+
+    # H2 is a paired-doc gate: an approved PRD alone must not advance to slicing.
+    assert store.load_feature(slug).phase == Phase.DOC_REVIEW
+
+    store.approve_doc(slug, "adr", "arash")
+    assert store.load_feature(slug).phase == Phase.SLICING
+
+
 def test_done_phase_when_all_issues_done(store):
     slug = store.create_feature("Feature X", "desc")
+    store.write_doc(slug, "adr", "adr")
+    store.approve_doc(slug, "adr", "arash")
     store.write_doc(slug, "prd", "prd")
     store.approve_doc(slug, "prd", "arash")
     store.write_issue(slug, Issue(id="ISS-001", title="a", status=IssueStatus.MERGED))

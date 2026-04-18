@@ -77,6 +77,18 @@ def test_decisions_digest_absent_returns_empty():
     assert review.decisions_digest("") == []
 
 
+def test_decisions_digest_keeps_none_line():
+    body = """# ADR
+
+## Decisions made on your behalf
+
+_None — no judgment calls beyond the plan._
+
+## Decision
+"""
+    assert review.decisions_digest(body) == ["_None — no judgment calls beyond the plan._"]
+
+
 # --- compose_review_comment --- #
 
 def test_compose_review_comment_skips_blanks():

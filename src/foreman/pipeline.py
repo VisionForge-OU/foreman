@@ -259,7 +259,10 @@ class Pipeline:
     async def run_slicer(self, slug: str) -> list:
         self.ensure_skills_installed()
         state = self.store.load_feature(slug)
+        adr = state.doc("adr")
         prd = state.doc("prd")
+        if adr is None or adr.status != DocStatus.APPROVED:
+            raise PipelineError("cannot slice: ADR is not approved")
         if prd is None or prd.status != DocStatus.APPROVED:
             raise PipelineError("cannot slice: PRD is not approved")
 

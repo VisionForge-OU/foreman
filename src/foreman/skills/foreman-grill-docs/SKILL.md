@@ -82,20 +82,19 @@ there**, not in a batch:
 ### 4. Write the two Foreman drafts
 
 Write `adr.md` and `prd.md` into the feature directory. Each begins with the open
-questions block (see format below). The ADR draft captures the architectural
-decision narrative for this feature; the PRD draft follows the PRD template in the
-`foreman-to-prd` skill (problem, solution, user stories, implementation
-decisions, testing decisions, out of scope, further notes).
-
-In the **PRD draft only**, immediately after the open-questions block and before
-the prose, emit a `## Decisions made on your behalf` section: **≤10 bullets**, each
-a single audit-judgment call you settled autonomously that the reviewer should be
-able to sanity-check **without re-reading the prose** (e.g. "Chose optimistic
+questions block (see format below). Immediately after the open-questions block in
+**both drafts**, emit a `## Decisions made on your behalf` section: **≤10 bullets**,
+each a single audit-judgment call you settled autonomously that the reviewer should
+be able to sanity-check **without re-reading the prose** (e.g. "Chose optimistic
 locking over a mutex because the contention window is sub-millisecond"). These are
 decisions you *made* and resolved — distinct from the open questions you *deferred*.
-Keep each bullet to one line; omit the section only if you genuinely made no
-non-obvious calls (then write a single line: `_None — no judgment calls beyond the
-plan._`).
+Keep each bullet to one line; if you genuinely made no non-obvious calls, write a
+single line: `_None — no judgment calls beyond the plan._`.
+
+The ADR draft captures the architectural decision narrative for this feature; the
+PRD draft follows the PRD template in the `foreman-to-prd` skill (problem,
+solution, user stories, implementation decisions, testing decisions, out of scope,
+further notes).
 
 ### 5. On a revision pass
 

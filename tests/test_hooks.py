@@ -148,3 +148,57 @@ def test_installer_writes_settings_and_env(tmp_path):
 
     hooks.cleanup(worktree)
     assert not inst.hooks_dir.exists()
+
+
+# --- MCP tools (the worker may edit/run via MCP equivalents, e.g. lean-ctx) --- #
+
+def test_hook_denies_mcp_edit_to_protected_path():
+    """An MCP edit tool (ctx_edit -> {path, old_string, new_string}) writing a
+    Foreman-owned file must be denied, just like the native Edit."""
+    proc = _run_hook({"tool_name": "mcp__lean-ctx__ctx_edit",
+                      "tool_input": {"path": "/r/.foreman/features/f/verification.json",
+                                     "old_string": "a", "new_string": "b"}})
+    assert proc.returncode == 0
+    assert json.loads(proc.stdout)["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_hook_denies_mcp_edit_to_issue_file():
+    proc = _run_hook({"tool_name": "mcp__lean-ctx__ctx_edit",
+                      "tool_input": {"path": "/r/.foreman/features/f/issues/ISS-002.md",
+                                     "old_string": "a", "new_string": "b"}})
+    assert json.loads(proc.stdout)["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_hook_blocks_mcp_shell_writing_protected_file():
+    """An MCP shell tool (ctx_shell -> {command}) redirecting into a protected file
+    is blocked via exit 2, like native Bash."""
+    proc = _run_hook({"tool_name": "mcp__lean-ctx__ctx_shell",
+                      "tool_input": {"command": "echo x > .foreman/features/f/verification.json"}})
+    assert proc.returncode == 2
+
+
+def test_hook_allows_mcp_read_of_protected_file():
+    """Reading a protected file is fine — only WRITES are blocked. An MCP read tool
+    (ctx_read -> {path}) with no write markers must NOT be denied."""
+    proc = _run_hook({"tool_name": "mcp__lean-ctx__ctx_read",
+                      "tool_input": {"path": "/r/.foreman/features/f/verification.json"}})
+    assert proc.returncode == 0
+    assert proc.stdout.strip() == ""          # no deny emitted
+
+
+def test_hook_allows_mcp_edit_of_unprotected_file():
+    proc = _run_hook({"tool_name": "mcp__lean-ctx__ctx_edit",
+                      "tool_input": {"path": "/r/app/main.py", "old_string": "a", "new_string": "b"}})
+    assert proc.returncode == 0 and proc.stdout.strip() == ""
+
+
+def test_installed_settings_matcher_covers_mcp_tools(tmp_path):
+    """The per-worktree PreToolUse hook must be registered for MCP tools too, or the
+    deny hook never fires for an MCP edit/shell (the worker could bypass the gate)."""
+    wt = tmp_path / "ISS-001"
+    wt.mkdir()
+    inst = hooks.install(wt, test_command="pytest", worker_id="ISS-001")
+    settings = json.loads(Path(inst.settings_path).read_text())
+    matcher = settings["hooks"]["PreToolUse"][0]["matcher"]
+    assert "mcp__" in matcher
+    assert "Edit" in matcher and "Bash" in matcher   # native still covered
