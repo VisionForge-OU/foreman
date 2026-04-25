@@ -244,24 +244,12 @@ def aggregate(records: list[dict[str, Any]], *, slug: str = "") -> Metrics:
 
 
 def load_feature_metrics(store: Any, slug: str) -> Metrics:
-    """Read every ``runs/*/usage.json`` for a feature and aggregate it.
+    """Aggregate every ``runs/*/usage.json`` for a feature.
 
-    ``store`` is any object exposing ``.paths.runs_dir(slug)`` (a
-    :class:`~foreman.state.FileStore`). Missing/garbage records are skipped.
+    ``store`` is a :class:`~foreman.state.FileStore` (or anything exposing
+    ``usage_records(slug)``). Missing/garbage records are skipped by the store.
     """
-    import json
-
-    runs_dir = store.paths.runs_dir(slug)
-    records: list[dict[str, Any]] = []
-    if runs_dir.exists():
-        for usage in sorted(runs_dir.glob("*/usage.json")):
-            try:
-                data = json.loads(usage.read_text())
-            except (ValueError, OSError):
-                continue
-            if isinstance(data, dict):
-                records.append(data)
-    return aggregate(records, slug=slug)
+    return aggregate(store.usage_records(slug), slug=slug)
 
 
 # --------------------------------------------------------------------------- #

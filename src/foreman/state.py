@@ -10,12 +10,13 @@ body changed since it was approved, the approval is dropped and status reverts t
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Optional
 
 from . import frontmatter
-from .hashing import body_hash
+from . import seal
 from .models import (
     Approval,
     Budget,
@@ -213,7 +214,7 @@ class FileStore:
 
         # R3: auto-invalidate approval if the body changed since approval.
         if status == DocStatus.APPROVED:
-            if approval is None or approval.body_sha256 != body_hash(parsed.body):
+            if not seal.intact(approval.body_sha256 if approval else None, parsed.body):
                 gd.status = DocStatus.IN_REVIEW
                 gd.approval = None
                 # Persist the reverted status so disk is the source of truth.
@@ -259,7 +260,7 @@ class FileStore:
         gd.approval = Approval(
             reviewer=reviewer,
             timestamp=self._clock(),
-            body_sha256=body_hash(gd.body),
+            body_sha256=seal.fingerprint(gd.body),
         )
         self._write_doc(slug, gd)
         return gd
@@ -312,6 +313,16 @@ class FileStore:
             reviewer=str(parsed.get("reviewer", "")),
             timestamp=str(parsed.get("timestamp", "")),
         )
+
+    def write_review_snapshot(self, slug: str, kind: str, version: int, body: str) -> None:
+        """Snapshot the doc body a reviewer acted on, for diff-since-last-review (WS5.2)."""
+        self.paths.reviews_dir(slug).mkdir(parents=True, exist_ok=True)
+        (self.paths.reviews_dir(slug) / f"{kind}-v{version}-body.md").write_text(body)
+
+    def read_review_snapshot(self, slug: str, kind: str, version: int) -> Optional[str]:
+        """The snapshotted body for a reviewed version (None if absent)."""
+        snap = self.paths.reviews_dir(slug) / f"{kind}-v{version}-body.md"
+        return snap.read_text() if snap.exists() else None
 
     # ------------------------------------------------------------------ #
     # Issues
@@ -399,8 +410,6 @@ class FileStore:
     # Run records
     # ------------------------------------------------------------------ #
     def write_run_record(self, slug: str, record: RunRecord) -> None:
-        import json
-
         rdir = self.paths.run_dir(slug, record.run_id)
         rdir.mkdir(parents=True, exist_ok=True)
         self.paths.run_usage(slug, record.run_id).write_text(
@@ -411,6 +420,70 @@ class FileStore:
         rdir = self.paths.run_dir(slug, run_id)
         rdir.mkdir(parents=True, exist_ok=True)
         self.paths.run_summary(slug, run_id).write_text(summary)
+
+    def read_run_progress(self, slug: str, run_id: str) -> str:
+        """The worker's progress.md handoff for a run (empty if not written)."""
+        path = self.paths.run_progress(slug, run_id)
+        return path.read_text() if path.exists() else ""
+
+    def write_run_verdict(self, slug: str, run_id: str, payload: dict) -> None:
+        """Persist the evaluator verdict JSON for a run (Foreman-owned, WS2.4)."""
+        path = self.paths.run_verdict(slug, run_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, indent=2) + "\n")
+
+    def write_run_audit(self, slug: str, run_id: str, payload: dict) -> None:
+        """Persist the spec-auditor JSON for a run (WS5.1)."""
+        path = self.paths.run_audit(slug, run_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, indent=2) + "\n")
+
+    def audit_payloads(self, slug: str) -> list[dict]:
+        """Raw audit.json payloads for a feature, newest run first (garbage skipped)."""
+        rdir = self.paths.runs_dir(slug)
+        out: list[dict] = []
+        if not rdir.exists():
+            return out
+        for path in sorted(rdir.glob("*/audit.json"), reverse=True):
+            try:
+                out.append(json.loads(path.read_text()))
+            except (json.JSONDecodeError, OSError):
+                continue
+        return out
+
+    def usage_records(self, slug: str) -> list[dict]:
+        """Every run's usage.json payload for a feature, sorted by run dir (dicts only)."""
+        rdir = self.paths.runs_dir(slug)
+        out: list[dict] = []
+        if not rdir.exists():
+            return out
+        for usage in sorted(rdir.glob("*/usage.json")):
+            try:
+                data = json.loads(usage.read_text())
+            except (ValueError, OSError):
+                continue
+            if isinstance(data, dict):
+                out.append(data)
+        return out
+
+    def write_report(self, slug: str, text: str) -> None:
+        """Write the feature build report (report.md)."""
+        self.paths.report_file(slug).write_text(text)
+
+    # ------------------------------------------------------------------ #
+    # Escalations (the attention queue's on-disk record)
+    # ------------------------------------------------------------------ #
+    def append_escalation(self, slug: str, issue_id: str, text: str) -> None:
+        """Append to an issue's escalation file (created if absent)."""
+        self.paths.escalations_dir(slug).mkdir(parents=True, exist_ok=True)
+        path = self.paths.escalation_file(slug, issue_id)
+        existing = path.read_text() if path.exists() else ""
+        path.write_text(existing + text)
+
+    def read_escalation(self, slug: str, issue_id: str) -> str:
+        """An issue's escalation file text (empty if none)."""
+        path = self.paths.escalation_file(slug, issue_id)
+        return path.read_text() if path.exists() else ""
 
     # ------------------------------------------------------------------ #
     # Phase derivation — phase is always recomputed from disk state (R4)

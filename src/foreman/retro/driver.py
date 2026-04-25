@@ -17,7 +17,7 @@ from typing import Awaitable, Callable, Optional
 
 from .. import frontmatter
 from ..backend import AgentBackend, RunSpec
-from ..hashing import body_hash
+from .. import seal
 from ..runner import AgentRunner
 from . import bench as bench_mod
 from . import metrics as metrics_mod
@@ -29,14 +29,7 @@ RETRO_AGENT = "foreman-retro"
 def _records_for(store, slugs: list[str]) -> list[dict]:
     out: list[dict] = []
     for slug in slugs:
-        rdir = store.paths.runs_dir(slug)
-        if not rdir.exists():
-            continue
-        for usage in rdir.glob("*/usage.json"):
-            try:
-                out.append(json.loads(usage.read_text()))
-            except (json.JSONDecodeError, OSError):
-                pass
+        out.extend(store.usage_records(slug))
     return out
 
 
@@ -107,7 +100,7 @@ def load(store, name: str) -> Optional[StoredProposal]:
     )
     status = str(doc.get("status", "in_review"))
     approval_hash = doc.get("body_sha256")
-    sealed = status == "approved" and approval_hash == body_hash(doc.body)
+    sealed = status == "approved" and seal.intact(approval_hash, doc.body)
     if status == "approved" and not sealed:
         # Body changed after approval → auto-invalidate (R3), revert to in_review.
         status = "in_review"
@@ -122,7 +115,7 @@ def approve(store, name: str, reviewer: str = "reviewer") -> StoredProposal:
     doc = frontmatter.parse(path.read_text())
     doc.meta["status"] = "approved"
     doc.meta["reviewer"] = reviewer
-    doc.meta["body_sha256"] = body_hash(doc.body)
+    doc.meta["body_sha256"] = seal.fingerprint(doc.body)
     path.write_text(frontmatter.serialize(doc.meta, doc.body))
     return load(store, name)
 

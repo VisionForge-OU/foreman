@@ -17,11 +17,39 @@ from typing import Any, Optional
 # --------------------------------------------------------------------------- #
 # Event types
 # --------------------------------------------------------------------------- #
+# Native tool names that count as the agent making real progress (file/command
+# activity). MCP tools count too (see ``AssistantMessage.made_progress``): a worker
+# that edits/runs via MCP equivalents (e.g. lean-ctx ctx_edit / ctx_shell instead of
+# Edit / Bash) is still actively working, not stuck. This CLI-specific knowledge
+# lives here, behind the event vocabulary, so consumers never hard-code tool names.
+_PROGRESS_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit", "Bash", "Skill"}
+
+
 @dataclass
 class StreamEvent:
-    """Base class for all parsed events. ``raw`` is the original JSON dict."""
+    """Base class for all parsed events. ``raw`` is the original JSON dict.
+
+    The ``is_*`` / ``made_progress`` predicates let consumers above the backend
+    seam (runner stuck-detection, the TUI) react to events without importing the
+    concrete CLI event classes — so a stream-schema change stays contained here.
+    """
 
     raw: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def is_assistant(self) -> bool:
+        """True only for an assistant message (one model 'turn')."""
+        return False
+
+    @property
+    def is_result(self) -> bool:
+        """True only for the terminal result event (carries the authoritative cost)."""
+        return False
+
+    @property
+    def made_progress(self) -> bool:
+        """True if this event shows the agent doing real file/command work."""
+        return False
 
 
 @dataclass
@@ -79,6 +107,20 @@ class AssistantMessage(StreamEvent):
     usage: Usage = field(default_factory=Usage)
     model: str = ""
 
+    @property
+    def is_assistant(self) -> bool:
+        return True
+
+    @property
+    def made_progress(self) -> bool:
+        # Progress = a native file/command tool OR any MCP tool. Pure rumination
+        # and native read-only browsing still count as idle, so a genuinely
+        # spinning worker is caught while an MCP-driven one is not killed.
+        return any(
+            tu.name in _PROGRESS_TOOLS or tu.name.startswith("mcp__")
+            for tu in self.tool_uses
+        )
+
 
 @dataclass
 class UserMessage(StreamEvent):
@@ -101,6 +143,10 @@ class ResultEvent(StreamEvent):
     result_text: str = ""
     usage: Usage = field(default_factory=Usage)
     terminal_reason: str = ""
+
+    @property
+    def is_result(self) -> bool:
+        return True
 
 
 @dataclass

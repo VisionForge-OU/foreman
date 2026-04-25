@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.5.0
+
+### Changed (internal architecture — no behaviour change)
+Eight behaviour-preserving deepenings from an architecture review; the full suite
+(335 tests) is green and a fresh adversarial diff review found no behavioural deltas.
+- **`seal.py`** — the approval hash invariant (sha256 of body, auto-invalidate on
+  edit) lives in one module; gated docs and retro proposals both call it.
+- **`prompts.py`** — single owner for the worker/agent/pipeline turn-extension
+  continuation text and the distilled failure-report appendix; dead `tdd()` removed.
+- **`runner.should_extend()`** — one extend-vs-escalate predicate shared by the
+  worker loop, the non-worker agent loop, and the Phase-A pipeline.
+- **`verification/merge_gate.py`** — `decide()` collapses the structural gate, the
+  evaluator stage, and the bounce/escalate policy into one `GateDecision`.
+- **`issue_run.py`** — the per-issue build lifecycle is a deep module; `scheduler.py`
+  shrank from 1110 to 782 lines and is now a dispatcher.
+- **`FileStore`** owns the `.foreman/` run-artifact + escalation I/O (verdict, audit,
+  escalation, report, usage, review snapshots) — orchestrators stop doing file I/O.
+- **TUI controller** is a facade (`kill_worker` / `escalation_text` / `config_path` /
+  `review_digest`); screens no longer reach into the store/scheduler/review module.
+- **`StreamEvent`** exposes `is_assistant` / `is_result` / `made_progress`; CLI
+  tool-name knowledge lives behind the parser, so the TUI survives schema drift.
+
 ## 0.4.12
 
 ### Fixed

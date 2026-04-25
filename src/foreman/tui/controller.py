@@ -23,9 +23,7 @@ from ..pipeline import Pipeline
 from ..runner import AgentRunner
 from ..scheduler import Scheduler
 from ..state import FileStore
-from ..stream_parser import (
-    AssistantMessage, ResultEvent, StreamEvent, humanize,
-)
+from ..stream_parser import StreamEvent, humanize
 
 
 def _run_id() -> str:
@@ -154,7 +152,7 @@ class Controller:
     def _on_phase_event(self, event: StreamEvent) -> None:
         """Pipeline event sink: keep the status line + global log live for the
         otherwise-silent Phase-A agents (planner/grill/slicer)."""
-        if isinstance(event, AssistantMessage) and self.activity is not None:
+        if event.is_assistant and self.activity is not None:
             self.activity.turns += 1
         line = humanize(event)
         if not line:
@@ -192,9 +190,9 @@ class Controller:
 
     def worker_event(self, issue_id: str, event: StreamEvent) -> None:
         wl = self.workers.setdefault(issue_id, WorkerLog(issue_id))
-        if isinstance(event, AssistantMessage):
+        if event.is_assistant:
             wl.turns += 1
-        elif isinstance(event, ResultEvent):
+        elif event.is_result:
             wl.cost = event.total_cost_usd or wl.cost
         line = humanize(event)
         if line:
@@ -240,6 +238,23 @@ class Controller:
 
     def escalations(self, slug: str):
         return self.scheduler.escalations(slug)
+
+    def kill_worker(self, issue_id: str) -> bool:
+        """Signal a running worker to stop (TUI). True if a worker was signalled."""
+        return self.scheduler.kill_issue(issue_id)
+
+    def escalation_text(self, slug: str, issue_id: str) -> str:
+        """The escalation detail for an issue (empty if none) — for the attention view."""
+        return self.store.read_escalation(slug, issue_id)
+
+    def config_path(self) -> Path:
+        """Path to the on-disk config file (the settings view shows it)."""
+        return self.store.paths.config_file
+
+    def review_digest(self, body: str) -> list[str]:
+        """The grill's 'decisions made on your behalf' digest for a doc body (WS5.2)."""
+        from .. import review
+        return review.decisions_digest(body)
 
     def feature_metrics_text(self, slug: str) -> str:
         """WS6.1: the metrics pane for a feature (success rate, retries, cost, escalations)."""
@@ -327,9 +342,9 @@ class Controller:
         for v in range(current_version - 1, 0, -1):
             rev = self.store.latest_review(slug, kind, v)
             if rev is not None:
-                snap = self.store.paths.reviews_dir(slug) / f"{kind}-v{v}-body.md"
-                if snap.exists():
-                    return snap.read_text()
+                snap = self.store.read_review_snapshot(slug, kind, v)
+                if snap is not None:
+                    return snap
         return ""
 
     def conflict_summary(self, slug: str) -> str:
@@ -391,8 +406,7 @@ class Controller:
         # shown as a diff-since-last-review.
         doc = self.feature(slug).doc(kind)
         if doc is not None:
-            self.store.paths.reviews_dir(slug).mkdir(parents=True, exist_ok=True)
-            (self.store.paths.reviews_dir(slug) / f"{kind}-v{doc.version}-body.md").write_text(doc.body)
+            self.store.write_review_snapshot(slug, kind, doc.version, doc.body)
         # WS5.1/H6: rejecting an auto-drafted PRD amendment is NOT a silent drop —
         # it keeps the approved spec and spins the divergence(s) into fix issues.
         from ..audit import AMENDMENT_HEADING

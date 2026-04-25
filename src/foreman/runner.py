@@ -42,21 +42,29 @@ KILLED_USER = "killed_user"
 KILLED_STUCK = "killed_stuck"
 ERROR = "error"
 
-# Native tool names that count as the agent making real progress (file/command
-# activity). MCP tools count too (see `_made_progress`): a worker that follows the
-# user's environment and edits/runs via MCP equivalents (e.g. lean-ctx ctx_edit /
-# ctx_shell instead of Edit / Bash) is still actively working, not stuck.
-_PROGRESS_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit", "Bash", "Skill"}
+def should_extend(
+    terminal_reason: str,
+    *,
+    has_session: bool,
+    extensions: int,
+    max_extensions: int,
+    auto_extend: bool,
+    requested_more: bool = False,
+) -> bool:
+    """Decide 'resume the SAME session with more turns' vs 'give up' (R5/§9, WS3.3).
 
+    The single owner of the extend-vs-escalate policy, shared by the worker loop,
+    the non-worker agent loop (evaluator/e2e/auditor), and the Phase-A pipeline.
 
-def _made_progress(tool_uses) -> bool:
-    """A turn shows progress if it called a native file/command tool OR any MCP tool.
-    Pure rumination (no tool calls) and native read-only browsing still count as idle,
-    so a genuinely spinning worker is caught while an MCP-driven one is not killed."""
-    return any(
-        tu.name in _PROGRESS_TOOLS or tu.name.startswith("mcp__")
-        for tu in tool_uses
-    )
+    A turn cut-off (``KILLED_TURNS``) — or an explicit worker request via
+    ``requested_more`` — extends; cost/timeout/stuck/error kills never do. An
+    extension is only possible when auto-extend is enabled, a resumable session
+    exists, and the per-run extension cap has not yet been reached.
+    """
+    if not auto_extend or not has_session or extensions >= max_extensions:
+        return False
+    return requested_more or terminal_reason == KILLED_TURNS
+
 
 EventCallback = Callable[[StreamEvent], None]
 
@@ -215,7 +223,7 @@ class AgentRunner:
                         break
                     # Stuck detection: consecutive turns with no progress tool use.
                     if stuck_turns:
-                        idle_turns = 0 if _made_progress(event.tool_uses) else idle_turns + 1
+                        idle_turns = 0 if event.made_progress else idle_turns + 1
                         if idle_turns >= stuck_turns:
                             terminal = KILLED_STUCK
                             break

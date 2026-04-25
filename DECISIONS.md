@@ -432,3 +432,47 @@ context-engineering post (context rot → minimal high-signal tokens), the evals
 and **anthropics/cwc-long-running-agents** — whose concrete primitives we adopt: a read-only
 `evaluator.md` agent, a `PreToolUse` verify gate, a `commit-on-stop` git backstop, and the
 Default-FAIL results contract (Foreman's `verification.json` seeded `passes:false`).
+
+---
+
+# Architecture deepening (2026-06-15, v0.5.0)
+
+A behaviour-preserving refactor (335 tests green; adversarial diff review found no
+behavioural deltas) that turned several shallow modules deep and closed leaking seams.
+Recorded here so future architecture reviews don't re-suggest them.
+
+- **The Seal (`seal.py`).** The approval invariant — "approval = sha256 of the body,
+  auto-invalidate on edit" (R3) — lives in one module. Both adapters that need it (gated
+  documents via `FileStore`, retro proposals via `retro/driver`) call `seal.intact()` /
+  `seal.fingerprint()`. `hashing.body_hash` remains the low-level primitive.
+- **Prompt continuation (`prompts.py`).** The cross-cutting "CONTINUE — resumed with more
+  turns" text (worker / non-worker agent / Phase-A pipeline) and the distilled
+  failure-report appendix have one owner. Per-role *base* prompts still live with their
+  agents (`context.assembler`, `agents.evaluator`, `audit`, `janitor`, `skill_invocation`).
+- **Budget policy (`runner.should_extend`).** One predicate decides "resume the same
+  session with more turns vs escalate"; the worker loop, the non-worker agent loop, and the
+  pipeline all call it instead of re-deriving the `KILLED_TURNS` + session + cap check.
+- **The merge gate (`verification/merge_gate.decide`).** The compound merge verdict
+  (evidence + acceptance + suite + ratchet + evaluator + bounce/escalate policy) is ONE
+  module returning a `GateDecision` (MERGE | BOUNCE | ESCALATE). The scheduler/`IssueRun`
+  only act on it. The evaluator stays a separate read-only `--agent` (injected, §2/WS2);
+  the commit that makes the slice reviewable is an injected `on_structural_pass` awaited
+  the instant the structural gate passes (before the evaluator diffs the worktree).
+- **The issue run (`issue_run.IssueRun`).** One issue's full build lifecycle (lock lease,
+  per-attempt worker run, turn-extension, mandatory handoff, merge gate, retry/escalation,
+  worktree teardown) is a deep method-object behind `run() -> str`. `scheduler.py` shrank
+  1110 → 782 lines and is now a dispatcher; a single issue is testable without the build loop.
+- **`FileStore` owns the `.foreman/` layout I/O.** Run artifacts (verdict, audit, report),
+  escalations, run progress, usage records, and review snapshots are written/read through
+  intent methods; orchestrators no longer construct paths to do file I/O, and `retro/metrics`
+  no longer duck-types on `.paths.runs_dir`. `RepoPaths` (`.paths`) remains an internal seam
+  for legitimate raw-`Path` needs (subprocess cwd / `extra_dirs`); it was deliberately NOT
+  fully privatised (low value, high churn).
+- **TUI controller is a facade.** Screens cross one seam via `kill_worker` /
+  `escalation_text` / `config_path` / `review_digest`, instead of reaching into
+  `controller.scheduler`, `controller.store.paths`, or importing the `review` module. `cli.py`
+  remains the composition root and may still wire collaborators directly.
+- **`StreamEvent` vocabulary.** Events expose `is_assistant` / `is_result` / `made_progress`,
+  and the CLI progress-tool names live in `stream_parser`. Consumers above the backend seam
+  (the TUI) no longer import concrete event classes; `runner` (the seam consumer) still
+  inspects typed events for accounting.

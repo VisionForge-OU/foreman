@@ -117,8 +117,7 @@ class ReviewScreen(Screen):
         title.update(f"[b]{self.kind.upper()}[/b]  v{d.version}  ·  status: {d.status.value}"
                      + (f"   ·   {badges}" if badges else ""))
         # WS5.2: surface the grill's "decisions made on your behalf" digest up top.
-        from .. import review
-        digest = review.decisions_digest(d.body)
+        digest = self.app.controller.review_digest(d.body)
         dwidget = self.query_one("#digest", Static)
         if digest:
             dwidget.update("[b]Decisions made on your behalf:[/b]\n"
@@ -252,7 +251,7 @@ class WorkerScreen(Screen):
         lv.index = ((lv.index or 0) + 1) % n
 
     def action_kill(self) -> None:
-        if self.selected and self.app.controller.scheduler.kill_issue(self.selected):
+        if self.selected and self.app.controller.kill_worker(self.selected):
             self.notify(f"kill signal sent to {self.selected}")
         else:
             self.notify("no running worker to kill", severity="warning")
@@ -309,8 +308,8 @@ class AttentionScreen(Screen):
         if not self.selected:
             detail.update("No escalations. 🎉")
             return
-        path = self.app.controller.store.paths.escalation_file(self.slug, self.selected)
-        detail.update(escape(path.read_text()) if path.exists() else f"{self.selected}: (no detail)")
+        text = self.app.controller.escalation_text(self.slug, self.selected)
+        detail.update(escape(text) if text else f"{self.selected}: (no detail)")
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         if event.item is None:
@@ -363,7 +362,7 @@ class SettingsScreen(Screen):
         import yaml
         cfg = self.app.controller.config
         text = yaml.safe_dump(cfg.to_dict(), sort_keys=False)
-        path = self.app.controller.store.paths.config_file
+        path = self.app.controller.config_path()
         self.query_one("#cfg", Static).update(
             f"[b]Configuration[/b] (edit {path} directly; validated on load)\n\n{text}"
         )

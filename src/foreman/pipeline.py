@@ -18,11 +18,11 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Optional
 
-from . import frontmatter, vendored
+from . import frontmatter, prompts, vendored
 from .backend import AgentBackend, RunSpec
 from .config import Config
 from .models import DocStatus, GatedDoc, Phase
-from .runner import AgentRunner, RunResult, KILLED_TURNS
+from .runner import AgentRunner, RunResult, should_extend
 from .skill_invocation import SkillInvocation
 from .state import FileStore
 
@@ -124,17 +124,16 @@ class Pipeline:
             if result.final_text:
                 self.store.write_run_summary(slug, run_id, result.final_text)
 
-            if (result.record.terminal_reason == KILLED_TURNS
-                    and self.config.auto_extend_turns
-                    and result.record.session_id
-                    and extensions < self.config.max_turn_extensions):
+            if should_extend(
+                result.record.terminal_reason,
+                has_session=bool(result.record.session_id),
+                extensions=extensions,
+                max_extensions=self.config.max_turn_extensions,
+                auto_extend=self.config.auto_extend_turns,
+            ):
                 extensions += 1
                 session_id = result.record.session_id
-                prompt = (
-                    "CONTINUE — Foreman granted you more turns and RESUMED your prior "
-                    "session. Pick up exactly where you left off, finish writing your "
-                    f"required output file(s) to the path(s) given earlier, then stop."
-                )
+                prompt = prompts.pipeline_continuation()
                 continue
             return result
 

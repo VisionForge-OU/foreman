@@ -6,7 +6,7 @@ All durable state lives as human-readable files under a target repo's
 ``.foreman/`` directory; nothing is stored in a database.
 """
 
-__version__ = "0.4.12"
+__version__ = "0.5.0"
 
 # Version marker stamped into every vendored skill's frontmatter and verified at
 # startup. Bump when any vendored skill changes so `foreman init` can offer an

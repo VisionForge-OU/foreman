@@ -9,8 +9,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from .models import Issue
-
 
 def use_skill(skill: str) -> str:
     """Standard instruction to invoke a vendored skill by name in headless mode."""
@@ -122,66 +120,6 @@ class SkillInvocation:
             "skill, with non-empty prd_refs for traceability.\n\n"
             f"--- APPROVED PRD ---\n{prd_body}\n"
         )
-
-    @staticmethod
-    def tdd(
-        issue: Issue,
-        commands: dict[str, Optional[str]],
-        *,
-        conventions: str = "",
-        failing_output: Optional[str] = None,
-        reviewer_answer: Optional[str] = None,
-        evidence_dir: Optional[Path] = None,
-    ) -> str:
-        cmd_lines = "\n".join(
-            f"  {name}: {cmd or '(not configured — skip)'}"
-            for name, cmd in commands.items()
-        )
-        parts = [
-            HEADLESS_PREAMBLE,
-            "",
-            use_skill("foreman-tdd"),
-            "",
-            "Implement EXACTLY this one issue as a single vertical slice using "
-            "strict red-green-refactor. Run tests with the `foreman-test` wrapper "
-            "(on your PATH) — never the raw runner; it keeps output small and "
-            "supports `--fast` for inner-loop runs. The project's commands are:\n"
-            f"{cmd_lines}\n",
-        ]
-        if issue.acceptance_check:
-            parts.append(
-                "This issue's acceptance check (Foreman re-runs it independently — "
-                f"make it pass): {issue.acceptance_check}\n"
-            )
-        if evidence_dir is not None:
-            parts.append(
-                "COMPLETION CONTRACT: before claiming done you MUST save evidence "
-                f"artifacts (the test log, command outputs) into: {evidence_dir}\n"
-                "List each saved artifact in the FOREMAN-SUMMARY `evidence` array. "
-                "A 'complete' claim with missing or empty evidence is rejected and "
-                "counts as a failed attempt. You may NOT write verification.json or "
-                "any issue file — Foreman owns those (a hook will block you).\n"
-            )
-        parts += [
-            "End your run with the required FOREMAN-SUMMARY json block (now "
-            "including the `evidence` array).",
-            "",
-            f"--- ISSUE {issue.id}: {issue.title} ---",
-            issue.body,
-        ]
-        if conventions:
-            parts.append(f"\n--- REPO CONVENTIONS ---\n{conventions}")
-        if failing_output:
-            parts.append(
-                "\n--- PREVIOUS ATTEMPT FAILED; fix these failures ---\n"
-                f"{failing_output}"
-            )
-        if reviewer_answer:
-            parts.append(
-                "\n--- HUMAN REVIEWER ANSWER to your earlier escalation ---\n"
-                f"{reviewer_answer}"
-            )
-        return "\n".join(parts)
 
     @staticmethod
     def e2e(prd_body: str, e2e_command: Optional[str]) -> str:

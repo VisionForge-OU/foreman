@@ -21,24 +21,23 @@ from pathlib import Path
 from typing import Callable, Optional, Protocol
 
 from . import (
-    audit as audit_mod, conflicts, git_ops, hooks, janitor as janitor_mod,
-    locks, notify as notify_mod, prd, vendored,
+    audit as audit_mod, conflicts, git_ops, janitor as janitor_mod,
+    locks, notify as notify_mod, prd, prompts, vendored,
 )
 from .agents import evaluator as evaluator_mod
 from .agents import installer as agents_installer
-from .retro import metrics as metrics_mod
 from .backend import AgentBackend, RunSpec
-from .context import distiller, initializer
-from .context.assembler import AssembledPrompt, ContextAssembler, estimate_tokens
+from .context import initializer
+from .context.assembler import ContextAssembler
 from .config import Config
+from .issue_run import IssueRun
 from .ledger import CostLedger
 from .models import DocStatus, IssueStatus, Issue
-from .runner import AgentRunner, RunResult, KILLED_USER, KILLED_TURNS
+from .runner import AgentRunner, RunResult, should_extend
 from .skill_invocation import SkillInvocation
 from .state import FileStore
 from .verify import verify
 from .verification import checks, ratchet
-from .verification.gate import run_gate
 from .worktree import WorktreeManager
 
 
@@ -277,7 +276,7 @@ class Scheduler:
         self._tally(slug, report)
         await self._maybe_run_e2e(slug, report)
         await self._maybe_run_auditor(slug, report)  # WS5.1: spec-integrity audit
-        self.store.paths.report_file(slug).write_text(report.render())
+        self.store.write_report(slug, report.render())
         return report
 
     # Mid-flight statuses: a worker was actively on the issue when the process died.
@@ -325,320 +324,12 @@ class Scheduler:
         self, slug: str, issue: Issue, *, reviewer_answer: Optional[str] = None,
         janitor_kind: Optional[str] = None,
     ) -> str:
-        branch = issue.branch or f"feature/{slug}/{issue.id.lower()}"
-        # WS4.2: take the crash-safe per-issue lock FIRST — before any destructive
-        # worktree work. The issue worktree path is shared per issue id, so a second
-        # worker for the same issue (a resume overlapping a build, or two builds) must
-        # back off here rather than clobbering the live worker's worktree via
-        # create_issue_worktree (which removes + recreates that path).
-        integ = await self.worktrees.integration_worktree()
-        lock_run = f"{issue.id}-{self._run_id_clock()}"
-        if not locks.acquire(integ, issue.id, run_id=lock_run):
-            self._log(f"{issue.id}: task lock held by a live worker — backing off")
-            self.store.update_issue_status(slug, issue.id, IssueStatus.QUEUED)
-            self._lock_blocked.add(issue.id)  # don't re-dispatch this build (no spin)
-            return "blocked"
-        cancel = asyncio.Event()
-        self._cancels[issue.id] = cancel
-        self.store.update_issue_status(slug, issue.id, IssueStatus.IN_PROGRESS, branch=branch)
-        try:
-            wt = await self.worktrees.create_issue_worktree(issue.id, branch)
-            # The worktree is forked from the integration branch, which usually does NOT
-            # have the (often-untracked) vendored foreman-* skills/agents committed — so
-            # the worker couldn't find the `foreman-tdd` skill and the evaluator couldn't
-            # run as `foreman-evaluator`. Provision them into each worktree; they're
-            # git-excluded (see build()) so they never leak into the merge.
-            vendored.install(wt)
-            agents_installer.install(wt)
-            # WS1.3/1.5: install the per-worktree deny hook + foreman-test wrapper.
-            hookinst = hooks.install(
-                wt, test_command=self.config.command("test"), worker_id=issue.id
-            )
-        except BaseException:
-            # Don't leak the per-issue lock if worktree/hook setup fails (it now runs
-            # AFTER acquiring the lock, so a setup failure must release it).
-            locks.release(integ, issue.id)
-            self._cancels.pop(issue.id, None)
-            raise
-        commands = self.config.commands
-        eval_bounces = 0  # WS2: count evaluator objections to detect repeated disagreement
-        # WS3.3: carry a distilled failure report + handoff across fresh retries.
-        failure_report = ""
-        prior_progress = ""
-        prior_session_id: Optional[str] = None
-        # Turn-budget extensions used so far this _work_issue (in-memory: a crash
-        # tears down the session/worktree, so the count is meaningless after).
-        turn_extensions = 0
-        prd_sections = self._prd_sections(slug, issue)
-        feature_state = initializer.read_feature_state(
-            self.store.paths.feature_state_file(slug)
-        )
-        try:
-            while True:
-                issue = self.store.load_issue(slug, issue.id)
-                locks.heartbeat(integ, issue.id, run_id=lock_run)  # WS4.2: prove liveness
-                run_id = f"{self._run_id_clock()}-{issue.id}"
-                evidence_dir = self.store.paths.run_evidence_dir(slug, run_id)
-                evidence_dir.mkdir(parents=True, exist_ok=True)
-                # WS3.1: every session runs the feature bootstrap first.
-                await self._run_init_sh(slug, wt)
-                # Turn-budget extension: this loop continues the SAME session with a
-                # fresh turn allowance, rather than a fresh-context retry.
-                if turn_extensions > 0:
-                    ext_turns = (self.config.turn_extension_size
-                                 or self.config.run_budget.max_turns)
-                    run_budget = replace(issue.budget, max_turns=ext_turns)
-                    resume_id = prior_session_id  # force resume regardless of retry_strategy
-                else:
-                    ext_turns = 0
-                    run_budget = issue.budget
-                    # WS3.3: fresh session by default; `resume` continues prior context.
-                    resume_id = (prior_session_id
-                                 if self.config.retry_strategy == "resume" else None)
-                if janitor_kind:  # WS4.3: specialist janitor prompt, same pipeline
-                    jtext = janitor_mod.build_prompt(
-                        issue, janitor_kind, evidence_dir=evidence_dir,
-                        feature_state=feature_state,
-                    )
-                    if failure_report:
-                        jtext += f"\n\n--- PRIOR ATTEMPT FAILED — distilled report ---\n{failure_report}"
-                    assembled = AssembledPrompt(
-                        text=jtext, breakdown={"janitor": estimate_tokens(jtext)}
-                    )
-                else:
-                    assembled = self.assembler.worker_prompt(
-                        issue, commands, evidence_dir=evidence_dir,
-                        prd_sections=prd_sections, feature_state=feature_state,
-                        progress=prior_progress, failure_report=failure_report,
-                        reviewer_answer=reviewer_answer or "",
-                        turns=run_budget.max_turns,
-                    )
-                reviewer_answer = None
-                prompt_text = assembled.text
-                if ext_turns:
-                    prompt_text = (
-                        f"CONTINUE — Foreman granted you ~{ext_turns} more turns and "
-                        "RESUMED your prior session. Pick up exactly where you left off; "
-                        "do NOT restart from scratch. Finish the slice, run the gate "
-                        "commands, save evidence, write your progress.md handoff, and "
-                        "emit the FOREMAN-SUMMARY when done.\n\n"
-                    ) + prompt_text
-                spec = RunSpec(
-                    kind="janitor" if janitor_kind else "tdd",
-                    slug=slug, repo_root=self.store.paths.root, cwd=wt,
-                    prompt=prompt_text, model=self.config.model_worker,
-                    effort=self.config.effort,
-                    permission_mode=self.config.permission_mode, budget=run_budget,
-                    label=issue.id, extra_dirs=[self.store.paths.feature_dir(slug)],
-                    settings_path=hookinst.settings_path, env=hookinst.env,
-                    session_id=resume_id,
-                )
-                if self.monitor:
-                    self.monitor.worker_started(issue.id, run_id)
-                    self._log(f"  ▸ {issue.id} prompt {assembled.total_tokens} tok "
-                              f"{dict(assembled.breakdown)}")
-                result = await self.runner.run(
-                    spec, run_id=run_id,
-                    transcript_path=self.store.paths.run_transcript(slug, run_id),
-                    on_event=(lambda e, iid=issue.id: self.monitor.worker_event(iid, e))
-                    if self.monitor else None,
-                    cancel_event=cancel,
-                    stuck_turns=self.config.stuck_turns,
-                )
-                result.record.prompt_tokens = assembled.total_tokens  # WS3.4 visibility
-                prior_session_id = result.record.session_id
-                self.store.write_run_record(slug, result.record)
-                if result.final_text:
-                    self.store.write_run_summary(slug, run_id, result.final_text)
-                self.ledger.add(result.record.cost_usd)
-
-                # Killed by the user → roll back the worktree clean, requeue (§7).
-                if result.record.terminal_reason == KILLED_USER:
-                    await self.worktrees.rollback_and_remove(wt)
-                    self.store.update_issue_status(slug, issue.id, IssueStatus.QUEUED)
-                    if self.monitor:
-                        self.monitor.worker_finished(issue.id, "killed", result)
-                    return "killed"
-
-                # Turn-budget extension: a worker that asks for more turns (or one cut
-                # off by the turn limit) gets a bounded resume of the SAME session to
-                # continue, instead of escalating. Only turn exhaustion / an explicit
-                # request — cost/timeout/stuck kills still escalate below.
-                summary = result.summary
-                wants_more = bool(summary and summary.request_more_turns
-                                  and not summary.escalate)
-                hard_turns = result.record.terminal_reason == KILLED_TURNS
-                if (wants_more or hard_turns) and self.config.auto_extend_turns:
-                    if (prior_session_id
-                            and turn_extensions < self.config.max_turn_extensions):
-                        turn_extensions += 1
-                        self._log(
-                            f"  ↻ {issue.id}: turn extension "
-                            f"{turn_extensions}/{self.config.max_turn_extensions} "
-                            f"({'requested' if wants_more else 'cut off'}) — "
-                            "resuming the same session"
-                        )
-                        continue  # keep the worktree; do NOT touch `attempts`
-                    reason = (
-                        f"turn budget exhausted after {turn_extensions} extension(s)"
-                        if prior_session_id else
-                        "turn budget exhausted (no resumable session to continue)"
-                    )
-                    self._escalate(slug, issue, reason)
-                    self._stamp_outcome(slug, result, metrics_mod.escalated(reason))
-                    await self.worktrees.remove(wt)
-                    if self.monitor:
-                        self.monitor.worker_finished(issue.id, "needs_human", result)
-                    return "escalated"
-
-                # Agent asked for help, or a budget/timeout/stuck kill → escalate.
-                esc = result.escalation_reason
-                if esc:
-                    self._escalate(slug, issue, esc)
-                    self._stamp_outcome(slug, result, metrics_mod.escalated(esc))
-                    await self.worktrees.remove(wt)
-                    if self.monitor:
-                        self.monitor.worker_finished(issue.id, "needs_human", result)
-                    return "escalated"
-
-                # WS3.2: mandatory handoff. A completion claim without an updated
-                # progress.md is structurally rejected and counts as a failed attempt.
-                prior_progress = initializer.read_feature_state(
-                    self.store.paths.run_progress(slug, run_id)
-                )
-                if not prior_progress.strip():
-                    attempts = issue.attempts + 1
-                    self.store.update_issue_status(
-                        slug, issue.id, IssueStatus.TESTS_FAILING, attempts=attempts
-                    )
-                    failure_report = distiller.distill(
-                        attempt=attempts, reason="no progress.md handoff was written",
-                        failing_output=(
-                            "You ended without updating progress.md in your run dir "
-                            "(what was done / what remains / dead ends tried / next step). "
-                            "The handoff is mandatory — write it before you stop."
-                        ),
-                        summary=result.summary,
-                    )
-                    if attempts >= self.config.limits.max_retries:
-                        self._escalate(slug, issue,
-                                       "repeatedly finished without a progress.md handoff")
-                        self._stamp_outcome(slug, result,
-                                            metrics_mod.escalated("no progress.md handoff"))
-                        await self.worktrees.remove(wt)
-                        if self.monitor:
-                            self.monitor.worker_finished(issue.id, "needs_human", result)
-                        return "escalated"
-                    continue
-
-                # The trust boundary: evidence + acceptance + suite + ratchet (WS1).
-                summary_evidence = result.summary.evidence if result.summary else []
-                gate = await run_gate(
-                    worktree=wt, commands=commands, issue=issue,
-                    check_dir=self.store.paths.issue_check_dir(slug, issue.id),
-                    evidence_dir=evidence_dir,
-                    baseline_path=self.store.paths.baseline_file(slug),
-                    summary_evidence=summary_evidence,
-                    env=hookinst.env, timeout_s=self.verify_timeout_s,
-                )
-
-                if gate.passed:
-                    # Commit so the diff is reviewable by the evaluator and mergeable.
-                    await git_ops.commit_all(wt, f"{issue.id}: {issue.title}")
-
-                    # WS2: the builder never grades its own work. Run the read-only
-                    # evaluator from a fresh context before merging.
-                    if self.config.evaluator_enabled:
-                        self.store.update_issue_status(
-                            slug, issue.id, IssueStatus.AWAITING_EVALUATION
-                        )
-                        verdict = await self._evaluate(slug, issue, wt, gate, evidence_dir)
-
-                        if verdict is None or verdict.is_uncertain:
-                            self._escalate(
-                                slug, issue,
-                                "evaluator could not decide (uncertain/unparseable verdict) — "
-                                "human review needed.\n"
-                                + (verdict.feedback() if verdict else "(no parseable verdict)"),
-                            )
-                            self._stamp_outcome(slug, result,
-                                                metrics_mod.escalated("evaluator uncertain"))
-                            await self.worktrees.remove(wt)
-                            if self.monitor:
-                                self.monitor.worker_finished(issue.id, "needs_human", result)
-                            return "escalated"
-
-                        if not verdict.is_pass:
-                            # Objections → bounce to a fresh builder (counts toward retries).
-                            eval_bounces += 1
-                            attempts = issue.attempts + 1
-                            self.store.update_issue_status(
-                                slug, issue.id, IssueStatus.TESTS_FAILING, attempts=attempts
-                            )
-                            failure_report = distiller.distill(
-                                attempt=attempts,
-                                reason="the independent evaluator rejected the work",
-                                failing_output=verdict.feedback(),
-                                summary=result.summary,
-                            )
-                            # Repeated builder-vs-grader disagreement → escalate both sides.
-                            if eval_bounces >= 2 or attempts >= self.config.limits.max_retries:
-                                self._escalate(
-                                    slug, issue,
-                                    f"evaluator objected {eval_bounces}x (builder claimed done) — "
-                                    f"human review needed.\n{verdict.feedback()}",
-                                )
-                                self._stamp_outcome(slug, result,
-                                                    metrics_mod.escalated("evaluator disagreement"))
-                                await self.worktrees.remove(wt)
-                                if self.monitor:
-                                    self.monitor.worker_finished(issue.id, "needs_human", result)
-                                return "escalated"
-                            self._stamp_outcome(slug, result, metrics_mod.evaluator_bounce())
-                            continue  # bounce: re-run the builder with the verdict attached
-
-                    # Passed structural gate (and evaluator, if enabled) — land it.
-                    self.store.mark_issue_passed(
-                        slug, issue.id, evidence=gate.evidence_artifacts
-                    )
-                    status = await self._land(slug, issue, branch, gate, wt)
-                    self.store.update_issue_status(slug, issue.id, status)
-                    self._stamp_outcome(  # WS6: success_first_try | success_after_retry(n)
-                        slug, result, metrics_mod.label_success(issue.attempts + 1))
-                    await self.worktrees.remove(wt)
-                    if self.monitor:
-                        self.monitor.worker_finished(issue.id, status.value, result)
-                    return "done"
-
-                # Gate failed — retry a FRESH session with a distilled failure report.
-                attempts = issue.attempts + 1
-                self.store.update_issue_status(
-                    slug, issue.id, IssueStatus.TESTS_FAILING, attempts=attempts
-                )
-                claim = result.summary.claims_pass if result.summary else None
-                reason = gate.reason
-                if claim is True:
-                    reason += " (your summary claimed success; Foreman's gate disagrees)"
-                failure_report = distiller.distill(
-                    attempt=attempts, reason=reason,
-                    failing_output=gate.feedback, summary=result.summary,
-                )
-                if attempts >= self.config.limits.max_retries:
-                    self._escalate(
-                        slug, issue,
-                        f"gate still failing after {attempts} attempt(s) "
-                        f"({gate.reason}):\n{gate.feedback[:1500]}",
-                    )
-                    self._stamp_outcome(slug, result, metrics_mod.escalated("gate failing"))
-                    await self.worktrees.remove(wt)
-                    if self.monitor:
-                        self.monitor.worker_finished(issue.id, "needs_human", result)
-                    return "escalated"
-                # else loop and retry, keeping the worktree so the agent iterates.
-        finally:
-            self._cancels.pop(issue.id, None)
-            hooks.cleanup(wt)
-            locks.release(integ, issue.id)  # WS4.2
+        """Run one issue's full lifecycle through its own worktree (delegated to
+        :class:`~foreman.issue_run.IssueRun`). Returns the terminal outcome string."""
+        return await IssueRun(
+            self, slug, issue,
+            reviewer_answer=reviewer_answer, janitor_kind=janitor_kind,
+        ).run()
 
     async def _run_agent_with_extensions(
         self, slug: str, *, label: str, monitor_id: Optional[str], base_budget,
@@ -679,10 +370,13 @@ class Scheduler:
                 self.store.write_run_summary(slug, run_id, result.final_text)
             self.ledger.add(result.record.cost_usd)
 
-            if (result.record.terminal_reason == KILLED_TURNS
-                    and self.config.auto_extend_turns
-                    and result.record.session_id
-                    and extensions < self.config.max_turn_extensions):
+            if should_extend(
+                result.record.terminal_reason,
+                has_session=bool(result.record.session_id),
+                extensions=extensions,
+                max_extensions=self.config.max_turn_extensions,
+                auto_extend=self.config.auto_extend_turns,
+            ):
                 extensions += 1
                 session_id = result.record.session_id
                 self._log(f"  ↻ {label}: turn extension "
@@ -714,9 +408,9 @@ class Scheduler:
         result, run_id = await self._run_agent_with_extensions(
             slug, label=f"{issue.id}-eval", monitor_id=f"{issue.id}-eval",
             base_budget=self.config.evaluator_budget, build_spec=_build,
-            continuation=("CONTINUE — Foreman resumed your prior session with more "
-                          "turns. Finish grading this slice and emit the required "
-                          "verdict JSON block, then stop. Do not start over."),
+            continuation=prompts.agent_continuation(
+                "grading this slice and emit the required "
+                "verdict JSON block, then stop. Do not start over."),
         )
 
         verdict = evaluator_mod.parse(
@@ -736,13 +430,10 @@ class Scheduler:
         self.store.write_run_record(slug, result.record)
 
     def _write_verdict(self, slug: str, run_id: str, verdict, final_text: str) -> None:
-        import json
-        path = self.store.paths.run_verdict(slug, run_id)
-        path.parent.mkdir(parents=True, exist_ok=True)
         payload = verdict.raw if verdict else {"schema": "foreman-verdict/v1",
                                                "verdict": "unparseable",
                                                "raw_text": final_text[:2000]}
-        path.write_text(json.dumps(payload, indent=2) + "\n")
+        self.store.write_run_verdict(slug, run_id, payload)
 
     # ------------------------------------------------------------------ #
     # WS3: context architecture (initializer, init.sh, minimal prompts)
@@ -877,13 +568,10 @@ class Scheduler:
     # Escalations (attention queue)
     # ------------------------------------------------------------------ #
     def _escalate(self, slug: str, issue: Issue, reason: str) -> None:
-        self.store.paths.escalations_dir(slug).mkdir(parents=True, exist_ok=True)
-        path = self.store.paths.escalation_file(slug, issue.id)
-        existing = path.read_text() if path.exists() else ""
-        path.write_text(
-            existing
-            + f"## Escalation @ {_utcnow()}\n\n{reason}\n\n"
-            "<!-- Reviewer: add your answer below this line, then resume from the TUI. -->\n\n"
+        self.store.append_escalation(
+            slug, issue.id,
+            f"## Escalation @ {_utcnow()}\n\n{reason}\n\n"
+            "<!-- Reviewer: add your answer below this line, then resume from the TUI. -->\n\n",
         )
         self.store.update_issue_status(slug, issue.id, IssueStatus.NEEDS_HUMAN)
         if self.monitor:
@@ -894,11 +582,11 @@ class Scheduler:
                         feature=slug, ref=issue.id, reason=reason)
 
     def _escalation_reason(self, slug: str, issue_id: str) -> str:
-        path = self.store.paths.escalation_file(slug, issue_id)
-        if not path.exists():
+        text = self.store.read_escalation(slug, issue_id)
+        if not text:
             return "needs human attention"
         # Return the first escalation reason line.
-        for line in path.read_text().splitlines():
+        for line in text.splitlines():
             line = line.strip()
             if line and not line.startswith(("#", "<!--")):
                 return line
@@ -917,10 +605,9 @@ class Scheduler:
         issue = self.store.load_issue(slug, issue_id)
         if issue is None:
             raise SchedulerError(f"no issue {issue_id}")
-        path = self.store.paths.escalation_file(slug, issue_id)
-        existing = path.read_text() if path.exists() else ""
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(existing + f"\n### Reviewer answer @ {_utcnow()}\n\n{answer}\n")
+        self.store.append_escalation(
+            slug, issue_id, f"\n### Reviewer answer @ {_utcnow()}\n\n{answer}\n"
+        )
         # Reset attempts so the human's answer gets a fresh retry budget.
         self.store.update_issue_status(slug, issue_id, IssueStatus.QUEUED, attempts=0)
         return await self._work_issue(slug, issue, reviewer_answer=answer)
@@ -929,15 +616,11 @@ class Scheduler:
     # Cost
     # ------------------------------------------------------------------ #
     def feature_cost(self, slug: str) -> float:
-        import json
         total = 0.0
-        rdir = self.store.paths.runs_dir(slug)
-        if not rdir.exists():
-            return 0.0
-        for usage in rdir.glob("*/usage.json"):
+        for rec in self.store.usage_records(slug):
             try:
-                total += float(json.loads(usage.read_text()).get("cost_usd", 0.0))
-            except (json.JSONDecodeError, ValueError, OSError):
+                total += float(rec.get("cost_usd", 0.0))
+            except (TypeError, ValueError):
                 pass
         return round(total, 6)
 
@@ -970,8 +653,7 @@ class Scheduler:
         await self._run_agent_with_extensions(
             slug, label="e2e", monitor_id="e2e", base_budget=self.config.run_budget,
             build_spec=_build,
-            continuation=("CONTINUE — Foreman resumed your prior session with more "
-                          "turns. Finish the e2e flow and stop."),
+            continuation=prompts.agent_continuation("the e2e flow and stop."),
         )
         if e2e_cmd:
             async with self._merge_lock:
@@ -1012,9 +694,9 @@ class Scheduler:
         result, run_id = await self._run_agent_with_extensions(
             slug, label="audit", monitor_id="audit",
             base_budget=self.config.evaluator_budget, build_spec=_build,
-            continuation=("CONTINUE — Foreman resumed your prior session with more "
-                          "turns. Finish the audit and emit the required audit JSON "
-                          "block, then stop. Do not start over."),
+            continuation=prompts.agent_continuation(
+                "the audit and emit the required audit JSON "
+                "block, then stop. Do not start over."),
         )
 
         rep = audit_mod.parse(result.final_text)
@@ -1041,26 +723,16 @@ class Scheduler:
         report.total_cost_usd = self.feature_cost(slug)
 
     def _write_audit(self, slug: str, run_id: str, report, final_text: str) -> None:
-        import json
-        path = self.store.paths.run_audit(slug, run_id)
-        path.parent.mkdir(parents=True, exist_ok=True)
         payload = report.raw if report else {
             "schema": "foreman-audit/v1", "status": "unparseable",
             "raw_text": final_text[:2000],
         }
-        path.write_text(json.dumps(payload, indent=2) + "\n")
+        self.store.write_run_audit(slug, run_id, payload)
 
     def _load_latest_audit(self, slug: str):
         """The most recent parseable audit report on disk (None if none)."""
-        import json
-        rdir = self.store.paths.runs_dir(slug)
-        if not rdir.exists():
-            return None
-        for path in sorted(rdir.glob("*/audit.json"), reverse=True):
-            try:
-                rep = audit_mod.report_from_raw(json.loads(path.read_text()))
-            except (json.JSONDecodeError, OSError):
-                continue
+        for raw in self.store.audit_payloads(slug):
+            rep = audit_mod.report_from_raw(raw)
             if rep is not None:
                 return rep
         return None
