@@ -11,6 +11,6 @@ verified to have no Write tool, so a grader can never mutate the tree (§P2.0).
 
 from __future__ import annotations
 
-from . import evaluator, installer
+from . import evaluator, installer, reviewer, security
 
-__all__ = ["evaluator", "installer"]
+__all__ = ["evaluator", "installer", "reviewer", "security"]

@@ -21,10 +21,14 @@ required_skills:
   - foreman-to-prd
   - foreman-to-issues
   - foreman-tdd
+  - foreman-plan
+  - foreman-web-testing
 
 required_agents:
   - foreman-evaluator
   - foreman-auditor
+  - foreman-code-review
+  - foreman-security-review
 
 # Commands Foreman runs ITSELF to verify a worker's claim. Set to null to skip.
 commands:
@@ -60,6 +64,24 @@ evaluator_budget:
 auditor_enabled: true
 model_auditor: claude-haiku-4-5-20251001
 # notify_command: "ntfy publish my-topic"   # fired on review-needed / escalation
+
+# WS7: two extra read-only merge-gate graders that review the committed slice after
+# the evaluator passes. A blocking verdict bounces a fresh builder with the findings;
+# repeated objections (or a hit on the retry ceiling) escalate to a human.
+# Both are opt-in: flip to true to add the gate. (Cheap on the small model, but each
+# adds a fresh agent run per issue and can bounce work back to the builder.)
+code_review_enabled: false
+model_code_reviewer: claude-haiku-4-5-20251001
+code_review_budget:
+  max_turns: 30
+  max_cost_usd: 2.00
+  timeout_min: 20
+security_review_enabled: false
+model_security_reviewer: claude-haiku-4-5-20251001
+security_review_budget:
+  max_turns: 30
+  max_cost_usd: 2.00
+  timeout_min: 20
 
 # Eval flywheel: `foreman bench` settings (WS6).
 bench_eval_set: .foreman/eval_set

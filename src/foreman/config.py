@@ -22,11 +22,17 @@ DEFAULT_REQUIRED_SKILLS = [
     "foreman-to-prd",
     "foreman-to-issues",
     "foreman-tdd",
+    # WS7: planning + e2e stage skills (the debug/verify helper skills are installed
+    # alongside but referenced opportunistically, so they are not hard requirements).
+    "foreman-plan",
+    "foreman-web-testing",
 ]
 
 DEFAULT_REQUIRED_AGENTS = [
     "foreman-evaluator",
     "foreman-auditor",
+    "foreman-code-review",
+    "foreman-security-review",
 ]
 
 
@@ -70,6 +76,20 @@ class Config:
     # WS5: the read-only spec-integrity auditor + low-fatigue review notifications.
     auditor_enabled: bool = True
     model_auditor: str = "claude-haiku-4-5-20251001"
+    # WS7: two extra read-only merge-gate graders that review the committed slice
+    # after the evaluator passes. Opt-in (a fresh gate run + possible builder↔grader
+    # bounces is real cost), fully wired when enabled. Both reuse the evaluator's
+    # small budget by default.
+    code_review_enabled: bool = False
+    model_code_reviewer: str = "claude-haiku-4-5-20251001"
+    code_review_budget: Budget = field(
+        default_factory=lambda: Budget(max_turns=30, max_cost_usd=2.0, timeout_min=20)
+    )
+    security_review_enabled: bool = False
+    model_security_reviewer: str = "claude-haiku-4-5-20251001"
+    security_review_budget: Budget = field(
+        default_factory=lambda: Budget(max_turns=30, max_cost_usd=2.0, timeout_min=20)
+    )
     notify_command: Optional[str] = None
     # WS6: bench (harness regression testing) settings.
     bench_eval_set: str = ".foreman/eval_set"
@@ -155,6 +175,12 @@ class Config:
             "evaluator_min_score": self.evaluator_min_score,
             "auditor_enabled": self.auditor_enabled,
             "model_auditor": self.model_auditor,
+            "code_review_enabled": self.code_review_enabled,
+            "model_code_reviewer": self.model_code_reviewer,
+            "code_review_budget": self.code_review_budget.to_dict(),
+            "security_review_enabled": self.security_review_enabled,
+            "model_security_reviewer": self.model_security_reviewer,
+            "security_review_budget": self.security_review_budget.to_dict(),
             "notify_command": self.notify_command,
             "bench_eval_set": self.bench_eval_set,
             "bench_cost_ceiling_usd": self.bench_cost_ceiling_usd,
@@ -198,6 +224,12 @@ def from_dict(d: dict[str, Any]) -> Config:
         evaluator_min_score=int(d.get("evaluator_min_score", 3)),
         auditor_enabled=bool(d.get("auditor_enabled", True)),
         model_auditor=str(d.get("model_auditor", "claude-haiku-4-5-20251001")),
+        code_review_enabled=bool(d.get("code_review_enabled", False)),
+        model_code_reviewer=str(d.get("model_code_reviewer", "claude-haiku-4-5-20251001")),
+        security_review_enabled=bool(d.get("security_review_enabled", False)),
+        model_security_reviewer=str(
+            d.get("model_security_reviewer", "claude-haiku-4-5-20251001")
+        ),
         notify_command=(str(d["notify_command"]).strip() or None)
         if d.get("notify_command") else None,
         bench_eval_set=str(d.get("bench_eval_set", ".foreman/eval_set")),
@@ -215,6 +247,10 @@ def from_dict(d: dict[str, Any]) -> Config:
     )
     if d.get("evaluator_budget"):
         cfg.evaluator_budget = Budget.from_dict(d.get("evaluator_budget"))
+    if d.get("code_review_budget"):
+        cfg.code_review_budget = Budget.from_dict(d.get("code_review_budget"))
+    if d.get("security_review_budget"):
+        cfg.security_review_budget = Budget.from_dict(d.get("security_review_budget"))
     return cfg
 
 

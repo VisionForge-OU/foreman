@@ -23,7 +23,7 @@ from ..skill_invocation import HEADLESS_PREAMBLE, use_skill
 # (WS3.4 / context rot) while leaving room for the issue + the failure report.
 DEFAULT_BUDGETS: dict[str, int] = {
     "preamble": 250,
-    "instructions": 400,
+    "instructions": 650,
     "turn_budget": 200,
     "issue": 1400,
     "acceptance": 120,
@@ -84,6 +84,20 @@ class ContextAssembler:
             "red-green-refactor. Run `init.sh` first if present. Run tests via the "
             "`foreman-test` wrapper (never the raw runner; `--fast` for inner loops).\n"
             f"Project commands:\n{cmd_lines}\n"
+        )
+        if failure_report:
+            # WS7: a retry — lead with disciplined root-cause debugging rather than
+            # re-running the prior attempt's approach.
+            instructions += (
+                "This run is a RETRY of a prior failed attempt (the distilled failure "
+                f"report is below). {use_skill('foreman-debug')} Find the ROOT CAUSE "
+                "before changing anything.\n"
+            )
+        # WS7: self-verify before claiming done — evidence before claims.
+        instructions += (
+            f"Before you claim done: {use_skill('foreman-verify')} Re-run the real "
+            "commands and read the output yourself; back the FOREMAN-SUMMARY evidence "
+            "array with the artifacts you saved.\n"
         )
         if issue.acceptance_check:
             instructions += (

@@ -15,6 +15,10 @@ required_skills:
   - foreman-to-prd
   - foreman-to-issues
   - foreman-tdd
+  - foreman-plan          # WS7: planning-stage skill
+  - foreman-web-testing   # WS7: e2e-stage skill
+  # WS7 also installs foreman-debug + foreman-verify (worker helper skills the
+  # builder invokes opportunistically — installed but not hard-required here).
 
 # Commands Foreman runs ITSELF to verify a worker's claim (never trusts the agent).
 # Set any to null/empty to skip that check. cwd is the issue worktree.
@@ -66,6 +70,8 @@ permission_mode: acceptEdits
 required_agents:
   - foreman-evaluator
   - foreman-auditor
+  - foreman-code-review       # WS7 (opt-in gate)
+  - foreman-security-review   # WS7 (opt-in gate)
 
 # WS2: the builder never grades its own work. A read-only evaluator grades each
 # slice on a 1-5 rubric from a fresh context; objections bounce to a fresh worker.
@@ -86,6 +92,17 @@ janitor_kinds: [dedup, conventions, docs]
 auditor_enabled: true
 model_auditor: claude-haiku-4-5-20251001
 # notify_command: "ntfy publish my-topic"     # fired on review-needed / escalation
+
+# WS7: two extra read-only merge-gate graders that review the committed slice after
+# the evaluator passes. A blocking verdict bounces a fresh builder with the findings;
+# repeated objections (or hitting max_retries) escalate to a human. Both are opt-in
+# (each adds a fresh agent run per issue) and reuse the evaluator's small budget.
+code_review_enabled: false
+model_code_reviewer: claude-haiku-4-5-20251001
+code_review_budget: { max_turns: 30, max_cost_usd: 2.00, timeout_min: 20 }
+security_review_enabled: false
+model_security_reviewer: claude-haiku-4-5-20251001
+security_review_budget: { max_turns: 30, max_cost_usd: 2.00, timeout_min: 20 }
 
 # WS6: `foreman bench` (harness regression testing) settings.
 bench_eval_set: .foreman/eval_set

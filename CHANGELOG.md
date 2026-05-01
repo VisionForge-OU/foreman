@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.6.0
+
+### Added — WS7: skills-suite expansion (4 worker skills + 2 read-only gate agents)
+Vendored six new capabilities, sourced from obra/superpowers (MIT) and Anthropic's
+skills, all rewritten headless into the `foreman-*` namespace (see NOTICE). The full
+suite is green (368 tests).
+- **`foreman-debug`** (← superpowers systematic-debugging) — root-cause-first debugging
+  the worker leads with on a retry; injected into the worker prompt whenever a distilled
+  failure report is present (`context/assembler.py`).
+- **`foreman-verify`** (← superpowers verification-before-completion) — self-verification
+  the worker runs before claiming done; referenced in every worker prompt's completion
+  contract.
+- **`foreman-plan`** (← superpowers writing-plans) — the planning stage now follows it
+  (`skill_invocation.planner`).
+- **`foreman-web-testing`** (← Anthropic web-app-testing + the tdd e2e half) — the e2e
+  stage now uses it instead of `foreman-tdd` (`skill_invocation.e2e`).
+- **`foreman-code-review`** + **`foreman-security-review`** — two read-only `--agent`
+  gate graders that review the committed slice after the evaluator passes. Each emits a
+  machine-readable verdict (`foreman-codereview/v1` / `foreman-security/v1`); a blocking
+  verdict bounces a fresh builder with the findings, repeated objections or the retry
+  ceiling escalate to a human. Both **opt-in** (`code_review_enabled` /
+  `security_review_enabled`, default off), wired through `merge_gate.decide()` →
+  `scheduler._review` / `_security`.
+- `merge_gate.decide()` gained default-disabled `code_review` / `security_review` grader
+  stages that reuse the existing bounce/escalate policy; config gained their
+  enable/model/budget knobs; `foreman init` installs all six new files.
+
 ## 0.5.0
 
 ### Changed (internal architecture — no behaviour change)

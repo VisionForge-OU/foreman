@@ -5,6 +5,7 @@ __pycache__/
 build/
 dist/
 .pytest_cache/
+.playwright-mcp/
 .venv/
 venv/
 .coverage

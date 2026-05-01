@@ -6,6 +6,26 @@ from foreman.vendored import SkillState
 
 REQUIRED = ["foreman-grill-docs", "foreman-to-prd", "foreman-to-issues", "foreman-tdd"]
 
+# WS7: the expanded skills suite — debugging, self-verification, planning, and
+# web/e2e testing skills vendored alongside the original four.
+SUITE_SKILLS = ["foreman-debug", "foreman-verify", "foreman-plan", "foreman-web-testing"]
+
+
+def test_suite_skills_packaged_with_version():
+    pkg = vendored.packaged_skills()
+    for name in SUITE_SKILLS:
+        assert name in pkg, f"{name} not packaged"
+        assert pkg[name] >= 1
+
+
+def test_suite_skills_install_into_target(tmp_path):
+    init_repo(tmp_path)
+    paths = RepoPaths(tmp_path)
+    states = {s.name: s.state for s in vendored.status(tmp_path)}
+    for name in SUITE_SKILLS:
+        assert (paths.skills_install_dir / name / "SKILL.md").exists(), f"{name} not installed"
+        assert states[name] == SkillState.OK
+
 
 def test_tool_available_guards_absent_tools(tmp_path):
     assert _tool_available("", tmp_path) is False

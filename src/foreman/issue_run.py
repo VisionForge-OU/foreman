@@ -271,6 +271,14 @@ class IssueRun:
                     )
                     return await self.s._evaluate(slug, issue, wt, g, evidence_dir)
 
+                async def _code_review_cb(_g):
+                    # WS7: read-only code-review gate agent on the committed slice.
+                    return await self.s._review(slug, issue, wt)
+
+                async def _security_cb(_g):
+                    # WS7: read-only security-review gate agent on the committed slice.
+                    return await self.s._security(slug, issue, wt)
+
                 def _distill(attempt, reason, failing_output):
                     return distiller.distill(
                         attempt=attempt, reason=reason,
@@ -291,6 +299,11 @@ class IssueRun:
                     evaluate=_evaluate_cb, distill=_distill,
                     summary_claims_pass=(result.summary.claims_pass
                                          if result.summary else None),
+                    # WS7: extra read-only gate agents (opt-in via config).
+                    code_review_enabled=self.s.config.code_review_enabled,
+                    code_review=_code_review_cb,
+                    security_review_enabled=self.s.config.security_review_enabled,
+                    security_review=_security_cb,
                 )
                 gate = decision.gate
 

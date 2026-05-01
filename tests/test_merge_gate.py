@@ -132,3 +132,102 @@ async def test_gate_pass_none_verdict_escalates(monkeypatch):
     assert d.action is Action.ESCALATE
     assert d.outcome == "evaluator uncertain"
     assert "(no parseable verdict)" in d.reason
+
+
+# --- WS7: the code-review + security-review gate agents --- #
+
+
+async def test_code_review_pass_merges(monkeypatch):
+    async def cr(_g):
+        return _verdict(is_pass=True)
+    kw, commits = _kwargs(_gate(True), monkeypatch=monkeypatch, evaluator_enabled=False,
+                          code_review_enabled=True, code_review=cr)
+    d = await merge_gate.decide(**kw)
+    assert d.action is Action.MERGE
+    assert commits == [1]
+
+
+async def test_code_review_objections_bounces(monkeypatch):
+    async def cr(_g):
+        return _verdict(is_pass=False, text="CR findings")
+    kw, commits = _kwargs(_gate(True), monkeypatch=monkeypatch, evaluator_enabled=False,
+                          code_review_enabled=True, code_review=cr)
+    d = await merge_gate.decide(**kw)
+    assert d.action is Action.BOUNCE
+    assert d.report == "REPORT[the code review rejected the work]"
+    assert d.is_evaluator_bounce is False  # counts as a normal attempt
+    assert commits == [1]
+
+
+async def test_code_review_objections_at_ceiling_escalates(monkeypatch):
+    async def cr(_g):
+        return _verdict(is_pass=False, text="CR findings")
+    kw, commits = _kwargs(_gate(True), monkeypatch=monkeypatch, attempts=2, max_retries=3,
+                          evaluator_enabled=False, code_review_enabled=True, code_review=cr)
+    d = await merge_gate.decide(**kw)
+    assert d.action is Action.ESCALATE
+    assert d.outcome == "code review objection"
+    assert "code review still objecting after 3 attempt(s)" in d.reason
+
+
+async def test_code_review_uncertain_escalates(monkeypatch):
+    async def cr(_g):
+        return _verdict(is_uncertain=True)
+    kw, _ = _kwargs(_gate(True), monkeypatch=monkeypatch, evaluator_enabled=False,
+                    code_review_enabled=True, code_review=cr)
+    d = await merge_gate.decide(**kw)
+    assert d.action is Action.ESCALATE
+    assert d.outcome == "code review uncertain"
+
+
+async def test_code_review_none_escalates(monkeypatch):
+    async def cr(_g):
+        return None
+    kw, _ = _kwargs(_gate(True), monkeypatch=monkeypatch, evaluator_enabled=False,
+                    code_review_enabled=True, code_review=cr)
+    d = await merge_gate.decide(**kw)
+    assert d.action is Action.ESCALATE
+    assert d.outcome == "code review uncertain"
+    assert "(no parseable verdict)" in d.reason
+
+
+async def test_security_runs_after_code_review_and_bounces(monkeypatch):
+    async def cr(_g):
+        return _verdict(is_pass=True)
+    async def sec(_g):
+        return _verdict(is_pass=False, text="SEC findings")
+    kw, commits = _kwargs(_gate(True), monkeypatch=monkeypatch, evaluator_enabled=False,
+                          code_review_enabled=True, code_review=cr,
+                          security_review_enabled=True, security_review=sec)
+    d = await merge_gate.decide(**kw)
+    assert d.action is Action.BOUNCE
+    assert d.report == "REPORT[the security review rejected the work]"
+
+
+async def test_all_three_graders_pass_merges(monkeypatch):
+    async def ok(_g):
+        return _verdict(is_pass=True)
+    kw, commits = _kwargs(_gate(True), monkeypatch=monkeypatch,
+                          evaluator_enabled=True, evaluate=ok,
+                          code_review_enabled=True, code_review=ok,
+                          security_review_enabled=True, security_review=ok)
+    d = await merge_gate.decide(**kw)
+    assert d.action is Action.MERGE
+    assert commits == [1]
+
+
+async def test_evaluator_objection_short_circuits_before_code_review(monkeypatch):
+    # If the evaluator already objects, the later graders never run.
+    ran = []
+    async def ev(_g):
+        return _verdict(is_pass=False)
+    async def cr(_g):
+        ran.append("cr")
+        return _verdict(is_pass=True)
+    kw, _ = _kwargs(_gate(True), monkeypatch=monkeypatch,
+                    evaluator_enabled=True, evaluate=ev, eval_bounces=0,
+                    code_review_enabled=True, code_review=cr)
+    d = await merge_gate.decide(**kw)
+    assert d.action is Action.BOUNCE
+    assert d.is_evaluator_bounce is True
+    assert ran == []  # code review skipped

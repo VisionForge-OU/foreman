@@ -64,6 +64,13 @@ async def decide(
         Callable[[GateResult], Awaitable[Optional[evaluator_mod.Verdict]]]
     ] = None,
     summary_claims_pass: Optional[bool] = None,
+    # WS7: additional read-only gate agents, run in order after the evaluator passes.
+    # Each callback returns a verdict exposing ``.is_pass`` / ``.is_uncertain`` /
+    # ``.feedback()`` (the same contract as the evaluator's Verdict).
+    code_review_enabled: bool = False,
+    code_review: Optional[Callable[[GateResult], Awaitable[object]]] = None,
+    security_review_enabled: bool = False,
+    security_review: Optional[Callable[[GateResult], Awaitable[object]]] = None,
 ) -> GateDecision:
     """Run the full merge gate and return ONE decision (see module docstring)."""
     gate = await run_gate(
@@ -73,10 +80,11 @@ async def decide(
     )
 
     if gate.passed:
-        # Commit FIRST: the evaluator diffs the committed worktree and a pass must
-        # leave a mergeable commit — this must precede `evaluate`.
+        # Commit FIRST: the graders diff the committed worktree and a pass must leave a
+        # mergeable commit — this must precede every grader.
         await on_structural_pass()
 
+        verdict: Optional[evaluator_mod.Verdict] = None
         if evaluator_enabled:
             verdict = await evaluate(gate) if evaluate is not None else None
             if verdict is None or verdict.is_uncertain:
@@ -112,10 +120,51 @@ async def decide(
                     action=Action.BOUNCE, gate=gate, verdict=verdict,
                     report=report, is_evaluator_bounce=True,
                 )
-            return GateDecision(action=Action.MERGE, gate=gate, verdict=verdict)
 
-        # Evaluator disabled → the structural gate is the whole verdict.
-        return GateDecision(action=Action.MERGE, gate=gate)
+        # WS7: additional read-only gate agents (code review, then security review).
+        # Each shares the evaluator's pass/objections/uncertain contract and reuses the
+        # bounce/escalate policy against the shared retry ceiling (a normal attempt, so
+        # `is_evaluator_bounce` stays False). Only the enabled stages run; if the
+        # evaluator already bounced/escalated above we never reach here.
+        for label, enabled, grade in (
+            ("code review", code_review_enabled, code_review),
+            ("security review", security_review_enabled, security_review),
+        ):
+            if not enabled:
+                continue
+            gv = await grade(gate) if grade is not None else None
+            if gv is None or gv.is_uncertain:
+                return GateDecision(
+                    action=Action.ESCALATE, gate=gate, verdict=verdict,
+                    reason=(
+                        f"{label} could not decide (uncertain/unparseable verdict) — "
+                        "human review needed.\n"
+                        + (gv.feedback() if gv else "(no parseable verdict)")
+                    ),
+                    outcome=f"{label} uncertain",
+                )
+            if not gv.is_pass:
+                new_attempts = attempts + 1
+                report = distill(
+                    attempt=new_attempts,
+                    reason=f"the {label} rejected the work",
+                    failing_output=gv.feedback(),
+                )
+                if new_attempts >= max_retries:
+                    return GateDecision(
+                        action=Action.ESCALATE, gate=gate, verdict=verdict,
+                        reason=(
+                            f"{label} still objecting after {new_attempts} attempt(s) "
+                            f"(builder claimed done):\n{gv.feedback()}"
+                        ),
+                        report=report, outcome=f"{label} objection",
+                    )
+                return GateDecision(
+                    action=Action.BOUNCE, gate=gate, verdict=verdict, report=report
+                )
+
+        # All enabled graders passed (or none enabled) → merge.
+        return GateDecision(action=Action.MERGE, gate=gate, verdict=verdict)
 
     # Gate failed structurally → bounce a fresh session, or escalate if retries spent.
     new_attempts = attempts + 1

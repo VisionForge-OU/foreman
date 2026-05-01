@@ -26,6 +26,8 @@ from . import (
 )
 from .agents import evaluator as evaluator_mod
 from .agents import installer as agents_installer
+from .agents import reviewer as reviewer_mod
+from .agents import security as security_mod
 from .backend import AgentBackend, RunSpec
 from .context import initializer
 from .context.assembler import ContextAssembler
@@ -423,6 +425,72 @@ class Scheduler:
             self.monitor.worker_finished(f"{issue.id}-eval", f"verdict:{v}", result)
             self._log(f"⚖ {issue.id} evaluator verdict: {v}")
         return verdict
+
+    async def _grade_diff(
+        self, slug: str, issue: Issue, wt: Path, *,
+        kind: str, label_suffix: str, agent_name: str, model: str, budget,
+        build_prompt, parse, task: str, glyph: str,
+    ):
+        """WS7: spawn a read-only diff grader (code review / security) from a fresh
+        context, parse its verdict, persist it, and return it. Mirrors ``_evaluate``
+        but for graders that judge the committed diff (no evidence inspection)."""
+        state = self.store.load_feature(slug)
+        prd_doc = state.doc("prd")
+        prd_sections = prd.extract_sections(prd_doc.body, issue.prd_refs) if prd_doc else ""
+        diff = await git_ops.diff_against(wt, self.config.git.integration_branch)
+        prompt = build_prompt(issue, prd_sections=prd_sections, diff=diff, worktree=wt)
+        label = f"{issue.id}-{label_suffix}"
+
+        def _build(session_id, b):
+            return RunSpec(
+                kind=kind, slug=slug, repo_root=self.store.paths.root, cwd=wt,
+                prompt=prompt, model=model, effort=self.config.effort,
+                permission_mode=self.config.permission_mode, budget=b,
+                label=label, agent=agent_name,
+                extra_dirs=[self.store.paths.feature_dir(slug)], session_id=session_id,
+            )
+        result, run_id = await self._run_agent_with_extensions(
+            slug, label=label, monitor_id=label, base_budget=budget, build_spec=_build,
+            continuation=prompts.agent_continuation(task),
+        )
+        verdict = parse(result.final_text)
+        payload = verdict.raw if verdict else {
+            "schema": kind, "verdict": "unparseable", "raw_text": result.final_text[:2000]
+        }
+        self.store.write_run_verdict(slug, run_id, payload)
+        if self.monitor:
+            v = verdict.verdict if verdict else "unparseable"
+            self.monitor.worker_finished(label, f"verdict:{v}", result)
+            self._log(f"{glyph} {issue.id} {kind} verdict: {v}")
+        return verdict
+
+    async def _review(
+        self, slug: str, issue: Issue, wt: Path
+    ) -> Optional[reviewer_mod.Verdict]:
+        """Spawn the read-only code-review gate agent on the committed slice (WS7)."""
+        return await self._grade_diff(
+            slug, issue, wt, kind="reviewer", label_suffix="review",
+            agent_name=reviewer_mod.AGENT_NAME, model=self.config.model_code_reviewer,
+            budget=self.config.code_review_budget, build_prompt=reviewer_mod.build_prompt,
+            parse=lambda t: reviewer_mod.parse(t),
+            task=("the code review and emit the required verdict JSON block, then "
+                  "stop. Do not start over."),
+            glyph="🔎",
+        )
+
+    async def _security(
+        self, slug: str, issue: Issue, wt: Path
+    ) -> Optional[security_mod.Verdict]:
+        """Spawn the read-only security-review gate agent on the committed slice (WS7)."""
+        return await self._grade_diff(
+            slug, issue, wt, kind="security", label_suffix="sec",
+            agent_name=security_mod.AGENT_NAME, model=self.config.model_security_reviewer,
+            budget=self.config.security_review_budget, build_prompt=security_mod.build_prompt,
+            parse=lambda t: security_mod.parse(t),
+            task=("the security review and emit the required verdict JSON block, then "
+                  "stop. Do not start over."),
+            glyph="🔐",
+        )
 
     def _stamp_outcome(self, slug: str, result, label: str) -> None:
         """WS6: record the run's outcome-taxonomy label and re-persist the record."""

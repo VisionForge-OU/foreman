@@ -39,9 +39,12 @@ class SkillInvocation:
         request: str, slug: str, plan_path: Path, *,
         prev_body: Optional[str] = None, review_comments: Optional[str] = None,
     ) -> str:
-        # The planner uses no vendored skill — it is a deep, high-effort plan.
+        # WS7: the planner follows the foreman-plan skill (deep, exploration-first,
+        # decomposition-aware) to produce the plan the grill stage then challenges.
         parts = [
             HEADLESS_PREAMBLE,
+            "",
+            use_skill("foreman-plan"),
             "",
             "You are a senior staff engineer. Produce a DEEP implementation plan "
             "for the feature request below, grounded in this repository. First "
@@ -125,7 +128,7 @@ class SkillInvocation:
     def e2e(prd_body: str, e2e_command: Optional[str]) -> str:
         return (
             f"{HEADLESS_PREAMBLE}\n\n"
-            f"{use_skill('foreman-tdd')}\n\n"
+            f"{use_skill('foreman-web-testing')}\n\n"
             "Derive end-to-end tests from the 'User Flows' section of the PRD "
             "below, implement them, and make them pass. Use this e2e command for "
             f"verification: {e2e_command or '(not configured)'}\n"

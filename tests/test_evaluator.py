@@ -63,6 +63,27 @@ def test_packaged_agents_includes_evaluator():
     assert pkg.get("foreman-evaluator") == 3
 
 
+# WS7: the two read-only gate agents vendored alongside the evaluator/auditor.
+GATE_AGENTS = ["foreman-code-review", "foreman-security-review"]
+
+
+def test_packaged_agents_includes_gate_agents():
+    pkg = agents_installer.packaged_agents()
+    for name in GATE_AGENTS:
+        assert pkg.get(name) == 1, f"{name} not packaged at v1"
+
+
+def test_gate_agents_install_read_only(tmp_path):
+    written = agents_installer.install(tmp_path)
+    for name in GATE_AGENTS:
+        assert name in written
+        text = (tmp_path / ".claude" / "agents" / f"{name}.md").read_text()
+        # Structurally read-only: no Write/Edit/Bash in the tools allowlist.
+        assert "tools: Read, Grep, Glob" in text
+        states = {s.name: s.state for s in agents_installer.status(tmp_path)}
+        assert states[name] == agents_installer.AgentState.OK
+
+
 def test_install_and_status_and_missing(tmp_path):
     assert agents_installer.missing(tmp_path, ["foreman-evaluator"]) == ["foreman-evaluator"]
     written = agents_installer.install(tmp_path)

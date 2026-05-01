@@ -25,6 +25,25 @@ Phase 2 ("Trustworthy Autonomy") adds Foreman-authored, read-only agent files
   foreman-auditor      [src/foreman/agents/assets/foreman-auditor.md]    impl↔PRD divergence audit
   foreman-retro        [src/foreman/agents/assets/foreman-retro.md]      evals-flywheel patch proposer
 
+WS7 ("Skills-suite expansion") adds four more derivative worker skills and two
+read-only gate agents. The worker skills are derived from obra/superpowers
+(https://github.com/obra/superpowers), Copyright (c) 2026 obra, MIT License, and
+from Anthropic's `web-app-testing` skill; all rewritten headless into the
+`foreman-*` namespace with the same modifications summarised below:
+
+  foreman-debug         <- superpowers systematic-debugging         [src/foreman/skills/foreman-debug/]
+  foreman-verify        <- superpowers verification-before-completion[src/foreman/skills/foreman-verify/]
+  foreman-plan          <- superpowers writing-plans                 [src/foreman/skills/foreman-plan/]
+  foreman-web-testing   <- Anthropic web-app-testing (+ tdd e2e)     [src/foreman/skills/foreman-web-testing/]
+
+The two read-only gate agents adapt the structure of obra/superpowers'
+code-reviewer prompt (MIT) and the diff-scoped, false-positive-aware approach of
+anthropics/claude-code-security-review (Apache-2.0); rewritten as Foreman gate
+agents emitting machine-readable verdicts:
+
+  foreman-code-review     [src/foreman/agents/assets/foreman-code-review.md]      diff review → foreman-codereview/v1
+  foreman-security-review [src/foreman/agents/assets/foreman-security-review.md]  vuln review → foreman-security/v1
+
 The evidence-gated "done" contract, the read-only evaluator, the commit-on-stop
 backstop, and the Default-FAIL results contract are adapted from the primitives in
 anthropics/cwc-long-running-agents (Apache-2.0); see DECISIONS.md §P2.5.
