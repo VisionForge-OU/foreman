@@ -1,0 +1,184 @@
+{
+  "setup": {
+    "ok": true,
+    "venv_python": "/home/arash/foreman-dogfood/dayplan/.venv-dayplan/bin/python",
+    "notes": [
+      "seed pytest rc=0: 1 passed, 1 warning in 0.04s",
+      "foreman init rc=0: Next: run `foreman` to launch the TUI, or `foreman demo` to see it work."
+    ]
+  },
+  "baseline": {
+    "wall_s": 53.7,
+    "cost_usd": 0.1114,
+    "ok": true,
+    "tests_pass": true,
+    "created_at_returned": true,
+    "turns": 11,
+    "terminal_reason": "completed",
+    "error": ""
+  },
+  "features": {
+    "F5": {
+      "key": "F5",
+      "type": "trivial",
+      "title": "Return created_at in task list",
+      "outcome": "done",
+      "stages": {
+        "plan": true,
+        "plan_review": true,
+        "grill": true,
+        "doc_review": true,
+        "slice": true,
+        "queue": true,
+        "build": "done"
+      },
+      "slug": "return-created-at-in-task-list",
+      "wall_s": 1861.1,
+      "cost_usd": 3.2262,
+      "issue_counts": {
+        "merged": 5
+      },
+      "metrics_pane": "Metrics \u2014 return-created-at-in-task-list\n  runs:           27\n  success rate:   100%\n  mean retries:   1.00 / issue\n  cost / issue:   $0.65\n  total cost:     $3.23\n  outcomes:\n    legacy                   22\n    success_first_try        5",
+      "findings": [
+        {
+          "severity": "minor",
+          "area": "tui",
+          "title": "worker(s) stuck at status='running' after feature done",
+          "detail": "controller.workers never finalized: ['audit'] (WorkerScreen would show them perpetually running)",
+          "feature": "return-created-at-in-task-list"
+        }
+      ],
+      "max_parallel": 1
+    },
+    "F1": {
+      "key": "F1",
+      "type": "greenfield",
+      "title": "Daily plan endpoint",
+      "outcome": "build:stuck",
+      "stages": {
+        "plan": true,
+        "plan_review": true,
+        "grill": true,
+        "doc_review": true,
+        "slice": true,
+        "queue": true,
+        "build": "stuck"
+      },
+      "slug": "daily-plan-endpoint",
+      "wall_s": 873.8,
+      "cost_usd": 1.8343,
+      "issue_counts": {
+        "queued": 3
+      },
+      "metrics_pane": "Metrics \u2014 daily-plan-endpoint\n  runs:           11\n  success rate:   0%\n  mean retries:   0.00 / issue\n  cost / issue:   $1.83\n  total cost:     $1.83\n  outcomes:\n    escalated                1\n    legacy                   10\n  escalations:\n      1\u00d7 (unspecified)",
+      "findings": [],
+      "max_parallel": 1
+    },
+    "F2": {
+      "key": "F2",
+      "type": "brownfield",
+      "title": "Task priority and due date",
+      "outcome": "failed:doc_review",
+      "stages": {
+        "plan": true,
+        "plan_review": true,
+        "grill": true,
+        "doc_review": false
+      },
+      "slug": "task-priority-and-due-date",
+      "findings": [
+        {
+          "severity": "major",
+          "area": "pipeline",
+          "title": "task-priority-and-due-date ('adr', 'prd') not approvable within 2 cycles",
+          "detail": "",
+          "feature": "task-priority-and-due-date"
+        }
+      ],
+      "max_parallel": 1
+    },
+    "F3": {
+      "key": "F3",
+      "type": "multi",
+      "title": "Backlog aging",
+      "outcome": "failed:grill",
+      "stages": {
+        "plan": true,
+        "plan_review": true,
+        "grill": false
+      },
+      "slug": "backlog-aging",
+      "findings": [
+        {
+          "severity": "major",
+          "area": "pipeline",
+          "title": "grill timed out",
+          "detail": "timed out after 20s waiting for: grill disk-ready",
+          "feature": "backlog-aging"
+        }
+      ],
+      "max_parallel": 2
+    },
+    "F4": {
+      "key": "F4",
+      "type": "vague",
+      "title": "Easier mornings",
+      "outcome": "failed:grill",
+      "stages": {
+        "plan": true,
+        "plan_review": true,
+        "grill": false
+      },
+      "slug": "easier-mornings",
+      "findings": [
+        {
+          "severity": "major",
+          "area": "pipeline",
+          "title": "grill timed out",
+          "detail": "timed out after 21s waiting for: grill disk-ready",
+          "feature": "easier-mornings"
+        }
+      ],
+      "max_parallel": 1
+    }
+  },
+  "findings": [
+    {
+      "severity": "major",
+      "area": "pipeline",
+      "title": "return-created-at-in-task-list ('plan',) not approvable within 2 cycles",
+      "detail": "",
+      "feature": "return-created-at-in-task-list"
+    },
+    {
+      "severity": "minor",
+      "area": "tui",
+      "title": "worker(s) stuck at status='running' after feature done",
+      "detail": "controller.workers never finalized: ['audit'] (WorkerScreen would show them perpetually running)",
+      "feature": "return-created-at-in-task-list"
+    },
+    {
+      "severity": "major",
+      "area": "pipeline",
+      "title": "task-priority-and-due-date ('adr', 'prd') not approvable within 2 cycles",
+      "detail": "",
+      "feature": "task-priority-and-due-date"
+    },
+    {
+      "severity": "major",
+      "area": "pipeline",
+      "title": "grill timed out",
+      "detail": "timed out after 20s waiting for: grill disk-ready",
+      "feature": "backlog-aging"
+    },
+    {
+      "severity": "major",
+      "area": "pipeline",
+      "title": "grill timed out",
+      "detail": "timed out after 21s waiting for: grill disk-ready",
+      "feature": "easier-mornings"
+    }
+  ],
+  "spent_usd": 8.9822,
+  "elapsed_s": 4325.3
+}

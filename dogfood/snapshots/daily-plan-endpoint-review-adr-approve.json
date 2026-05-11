@@ -1,0 +1,15 @@
+{
+  "ts": "2026-06-16T15:22:56.908526+00:00",
+  "label": "daily-plan-endpoint-review-adr-approve",
+  "screen": "ReviewScreen",
+  "current_slug": "daily-plan-endpoint",
+  "status_line": "idle",
+  "activity": null,
+  "widgets": {
+    "#title": "",
+    "#digest": "",
+    "#oq": "",
+    "#md": "",
+    "#comments": ""
+  }
+}

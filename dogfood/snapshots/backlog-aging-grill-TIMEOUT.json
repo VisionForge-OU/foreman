@@ -1,0 +1,15 @@
+{
+  "ts": "2026-06-15T23:08:57.549407+00:00",
+  "label": "backlog-aging-grill-TIMEOUT",
+  "screen": "DashboardScreen",
+  "current_slug": "backlog-aging",
+  "status_line": "idle",
+  "activity": null,
+  "widgets": {
+    "#hint": "",
+    "#board": "",
+    "#skills": "",
+    "#statusbar": "",
+    "#glogbody": ""
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "ts": "2026-06-15T21:25:14.177505+00:00",
+  "label": "add-done-command-review-adr-approve",
+  "screen": "ReviewScreen",
+  "current_slug": "add-done-command",
+  "status_line": "idle",
+  "activity": null,
+  "widgets": {
+    "#title": "",
+    "#digest": "",
+    "#oq": "",
+    "#md": "",
+    "#comments": ""
+  }
+}

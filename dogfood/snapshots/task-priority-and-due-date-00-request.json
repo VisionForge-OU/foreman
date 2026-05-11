@@ -1,0 +1,15 @@
+{
+  "ts": "2026-06-15T22:43:06.633691+00:00",
+  "label": "task-priority-and-due-date-00-request",
+  "screen": "DashboardScreen",
+  "current_slug": "task-priority-and-due-date",
+  "status_line": "idle",
+  "activity": null,
+  "widgets": {
+    "#hint": "",
+    "#board": "",
+    "#skills": "",
+    "#statusbar": "",
+    "#glogbody": ""
+  }
+}

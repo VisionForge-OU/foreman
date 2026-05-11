@@ -1,0 +1,26 @@
+{
+  "phase": "mock_dryrun",
+  "debrief": {
+    "key": "mock1",
+    "type": "demo",
+    "title": "Add done command",
+    "outcome": "done",
+    "stages": {
+      "plan": true,
+      "plan_review": true,
+      "grill": true,
+      "doc_review": true,
+      "slice": true,
+      "queue": true,
+      "build": "done"
+    },
+    "slug": "add-done-command",
+    "wall_s": 12.9,
+    "cost_usd": 0.65,
+    "issue_counts": {
+      "merged": 2
+    },
+    "metrics_pane": "Metrics \u2014 add-done-command\n  runs:           10\n  success rate:   100%\n  mean retries:   1.50 / issue\n  cost / issue:   $0.33\n  total cost:     $0.65\n  outcomes:\n    legacy                   8\n    success_after_retry      1\n    success_first_try        1"
+  },
+  "findings": []
+}

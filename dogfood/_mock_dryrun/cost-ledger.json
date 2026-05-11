@@ -1,0 +1,122 @@
+[
+  {
+    "when": "2026-06-15T21:25:22Z",
+    "feature": "add-done-command",
+    "label": "planner",
+    "source": "foreman-worker",
+    "model": "mock",
+    "real": false,
+    "cost_usd": 0.06,
+    "turns": 2,
+    "note": "completed",
+    "run_id": "20260615-212510-610875-planner"
+  },
+  {
+    "when": "2026-06-15T21:25:22Z",
+    "feature": "add-done-command",
+    "label": "grill",
+    "source": "foreman-worker",
+    "model": "mock",
+    "real": false,
+    "cost_usd": 0.08,
+    "turns": 3,
+    "note": "completed",
+    "run_id": "20260615-212511-838643-grill"
+  },
+  {
+    "when": "2026-06-15T21:25:22Z",
+    "feature": "add-done-command",
+    "label": "grill",
+    "source": "foreman-worker",
+    "model": "mock",
+    "real": false,
+    "cost_usd": 0.08,
+    "turns": 3,
+    "note": "completed",
+    "run_id": "20260615-212513-569462-grill"
+  },
+  {
+    "when": "2026-06-15T21:25:22Z",
+    "feature": "add-done-command",
+    "label": "slicer",
+    "source": "foreman-worker",
+    "model": "mock",
+    "real": false,
+    "cost_usd": 0.05,
+    "turns": 2,
+    "note": "completed",
+    "run_id": "20260615-212515-393350-slicer"
+  },
+  {
+    "when": "2026-06-15T21:25:22Z",
+    "feature": "add-done-command",
+    "label": "init",
+    "source": "foreman-worker",
+    "model": "mock",
+    "real": false,
+    "cost_usd": 0.02,
+    "turns": 2,
+    "note": "completed",
+    "run_id": "20260615-212516-096371-init"
+  },
+  {
+    "when": "2026-06-15T21:25:22Z",
+    "feature": "add-done-command",
+    "label": "ISS-001",
+    "source": "foreman-worker",
+    "model": "mock",
+    "real": false,
+    "cost_usd": 0.1,
+    "turns": 4,
+    "note": "completed",
+    "run_id": "20260615-212516-235905-ISS-001"
+  },
+  {
+    "when": "2026-06-15T21:25:22Z",
+    "feature": "add-done-command",
+    "label": "ISS-001",
+    "source": "foreman-worker",
+    "model": "mock",
+    "real": false,
+    "cost_usd": 0.12,
+    "turns": 5,
+    "note": "success_after_retry(2)",
+    "run_id": "20260615-212518-365077-ISS-001"
+  },
+  {
+    "when": "2026-06-15T21:25:22Z",
+    "feature": "add-done-command",
+    "label": "ISS-001-eval",
+    "source": "foreman-worker",
+    "model": "mock",
+    "real": false,
+    "cost_usd": 0.01,
+    "turns": 2,
+    "note": "completed",
+    "run_id": "20260615-212520-354296-ISS-001-eval"
+  },
+  {
+    "when": "2026-06-15T21:25:22Z",
+    "feature": "add-done-command",
+    "label": "ISS-002",
+    "source": "foreman-worker",
+    "model": "mock",
+    "real": false,
+    "cost_usd": 0.12,
+    "turns": 5,
+    "note": "success_first_try",
+    "run_id": "20260615-212520-554604-ISS-002"
+  },
+  {
+    "when": "2026-06-15T21:25:22Z",
+    "feature": "add-done-command",
+    "label": "ISS-002-eval",
+    "source": "foreman-worker",
+    "model": "mock",
+    "real": false,
+    "cost_usd": 0.01,
+    "turns": 2,
+    "note": "completed",
+    "run_id": "20260615-212522-538448-ISS-002-eval"
+  }
+]

@@ -1,0 +1,15 @@
+{
+  "ts": "2026-06-15T23:08:58.687898+00:00",
+  "label": "easier-mornings-00-request",
+  "screen": "DashboardScreen",
+  "current_slug": "easier-mornings",
+  "status_line": "idle",
+  "activity": null,
+  "widgets": {
+    "#hint": "",
+    "#board": "",
+    "#skills": "",
+    "#statusbar": "",
+    "#glogbody": ""
+  }
+}

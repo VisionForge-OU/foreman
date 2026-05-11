@@ -1,0 +1,11 @@
+{
+  "ts": "2026-06-15T21:25:23.794411+00:00",
+  "label": "metrics-screen",
+  "screen": "MetricsScreen",
+  "current_slug": "add-done-command",
+  "status_line": "build \u00b7 1 worker(s) \u00b7 e2e 3t $0.07 \u00b7 7s",
+  "activity": "build",
+  "widgets": {
+    "#metrics": ""
+  }
+}

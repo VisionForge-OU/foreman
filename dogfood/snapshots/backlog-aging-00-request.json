@@ -1,0 +1,15 @@
+{
+  "ts": "2026-06-15T23:02:30.102543+00:00",
+  "label": "backlog-aging-00-request",
+  "screen": "DashboardScreen",
+  "current_slug": "backlog-aging",
+  "status_line": "idle",
+  "activity": null,
+  "widgets": {
+    "#hint": "",
+    "#board": "",
+    "#skills": "",
+    "#statusbar": "",
+    "#glogbody": ""
+  }
+}

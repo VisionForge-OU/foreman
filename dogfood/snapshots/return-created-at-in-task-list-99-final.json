@@ -1,0 +1,15 @@
+{
+  "ts": "2026-06-15T22:28:31.131392+00:00",
+  "label": "return-created-at-in-task-list-99-final",
+  "screen": "DashboardScreen",
+  "current_slug": "return-created-at-in-task-list",
+  "status_line": "build \u00b7 1 worker(s) \u00b7 audit 0t $0.00 \u00b7 1311s",
+  "activity": "build",
+  "widgets": {
+    "#hint": "",
+    "#board": "",
+    "#skills": "",
+    "#statusbar": "",
+    "#glogbody": ""
+  }
+}

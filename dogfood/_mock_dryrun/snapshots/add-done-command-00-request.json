@@ -1,0 +1,15 @@
+{
+  "ts": "2026-06-15T21:25:10.572246+00:00",
+  "label": "add-done-command-00-request",
+  "screen": "DashboardScreen",
+  "current_slug": "add-done-command",
+  "status_line": "idle",
+  "activity": null,
+  "widgets": {
+    "#hint": "",
+    "#board": "",
+    "#skills": "",
+    "#statusbar": "",
+    "#glogbody": ""
+  }
+}
