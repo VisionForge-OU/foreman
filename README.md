@@ -503,6 +503,10 @@ It's developed and tested on Linux / WSL2 (Ubuntu). It should run anywhere the
 
 </details>
 
+## Star History
+
+[![Star History Chart](https://api.star-history.com/chart?repos=VisionForge-OU/foreman&type=date&legend=top-left)](https://www.star-history.com/?repos=VisionForge-OU%2Fforeman&type=date&legend=top-left)
+
 ## Acknowledgements
 
 - Built on [Textual](https://textual.textualize.io/) for the TUI and the
