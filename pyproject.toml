@@ -28,12 +28,6 @@ dependencies = [
     "pyyaml>=6.0",
 ]
 
-[project.urls]
-Homepage = "https://github.com/VisionForge-OU/foreman"
-Repository = "https://github.com/VisionForge-OU/foreman"
-Issues = "https://github.com/VisionForge-OU/foreman/issues"
-Changelog = "https://github.com/VisionForge-OU/foreman/blob/main/CHANGELOG.md"
-
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
@@ -42,6 +36,12 @@ dev = [
     "pytest-textual-snapshot>=1.0",
     "textual-dev>=1.5",
 ]
+
+[project.urls]
+Homepage = "https://github.com/VisionForge-OU/foreman"
+Repository = "https://github.com/VisionForge-OU/foreman"
+Issues = "https://github.com/VisionForge-OU/foreman/issues"
+Changelog = "https://github.com/VisionForge-OU/foreman/blob/main/CHANGELOG.md"
 
 [project.scripts]
 foreman = "foreman.cli:main"
