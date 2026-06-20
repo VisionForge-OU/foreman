@@ -95,6 +95,25 @@ permission_mode: acceptEdits
 # a failed context). Set to `resume` to continue the prior session instead.
 retry_strategy: fresh
 
+# Model-aware turn budgets (issue #1). A small/cheap model needs more turns than a
+# frontier one; out of the box the budget auto-scales by model tier and pipeline
+# phase so cheap models stop running out of turns mid-task.
+#   - turn_budget_by_model: pin an EXACT turn count for a model (escape hatch;
+#     bypasses tiers, phase scaling, and the floor).
+#   - turn_tiers / phase_turn_factors: override the built-in tier floors
+#     (small: 60, large: 30) and phase multipliers (grill/slicer ×1.5, e2e ×1.25);
+#     merged over the defaults — only list what you change.
+# turn_budget_by_model: {{ claude-haiku-4-5: 80 }}
+# turn_tiers: {{ small: 60, large: 30 }}
+# phase_turn_factors: {{ grill: 1.5, slicer: 1.5, e2e: 1.25 }}
+
+# When a run is killed at its turn cap, Foreman resumes the SAME session with more
+# turns until it completes or these cumulative ceilings bite. max_turn_extensions is
+# only a runaway backstop (0 ⇒ wall/cost are the sole limit).
+extension_wall_min: 30
+extension_cost_usd: 3.0
+max_turn_extensions: 6
+
 # WS4.3: run a specialist janitor pass (dedup → conventions → docs) after every N
 # merged feature issues, each gated by the same verification pipeline.
 janitor_enabled: true

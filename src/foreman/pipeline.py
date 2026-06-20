@@ -18,11 +18,11 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Optional
 
-from . import frontmatter, prompts, vendored
+from . import frontmatter, prompts, turns, vendored
 from .backend import AgentBackend, RunSpec
 from .config import Config
 from .models import DocStatus, GatedDoc, Phase
-from .runner import AgentRunner, RunResult, should_extend
+from .runner import AgentRunner, RunResult, run_duration_min, should_extend
 from .skill_invocation import SkillInvocation
 from .state import FileStore
 
@@ -88,16 +88,21 @@ class Pipeline:
     # ------------------------------------------------------------------ #
     async def _spawn(self, slug: str, ctx: SpawnContext, budget=None) -> RunResult:
         budget = budget or self.config.run_budget
+        # Model-aware turn budget (issue #1): scale by the model + this phase.
+        budget = turns.resolve_budget(self.config, ctx.model, ctx.kind, budget)
         # Phase-A agents emit no FOREMAN-SUMMARY, so the only extension trigger here is
-        # a hard turn cut-off: resume the SAME session with more turns, up to the cap,
-        # rather than handing back a half-written draft (the planner routinely needs it).
+        # a hard turn cut-off: resume the SAME session with more turns, until the
+        # cumulative wall/cost ceiling bites, rather than handing back a half-written
+        # draft (the planner routinely needs it).
         extensions = 0
+        chain_wall_min = 0.0
+        chain_cost_usd = 0.0
         session_id: Optional[str] = None
         prompt = ctx.prompt
         while True:
             run_id = f"{self._run_id_clock()}-{ctx.label}"
             if extensions > 0:
-                ext_turns = self.config.turn_extension_size or self.config.run_budget.max_turns
+                ext_turns = self.config.turn_extension_size or budget.max_turns
                 run_budget = replace(budget, max_turns=ext_turns)
             else:
                 run_budget = budget
@@ -124,12 +129,18 @@ class Pipeline:
             if result.final_text:
                 self.store.write_run_summary(slug, run_id, result.final_text)
 
+            chain_wall_min += run_duration_min(result.record)
+            chain_cost_usd += result.record.cost_usd
             if should_extend(
                 result.record.terminal_reason,
                 has_session=bool(result.record.session_id),
                 extensions=extensions,
                 max_extensions=self.config.max_turn_extensions,
                 auto_extend=self.config.auto_extend_turns,
+                chain_wall_min=chain_wall_min,
+                chain_cost_usd=chain_cost_usd,
+                wall_ceiling_min=self.config.extension_wall_min,
+                cost_ceiling_usd=self.config.extension_cost_usd,
             ):
                 extensions += 1
                 session_id = result.record.session_id

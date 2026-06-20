@@ -249,6 +249,36 @@ async def test_planner_revision_never_corrupts_canonical_doc(repo):
 
 
 @pytest.mark.asyncio
+async def test_planner_budget_is_model_floored(repo):
+    """Issue #1 wiring: a small-tier planner model receives the tier-floored turn
+    budget at the real spawn site, even when run_budget.max_turns is set lower."""
+    from foreman.demo_scripts import _init, _result, _assistant
+
+    counter = itertools.count(1)
+    store = FileStore(repo, clock=lambda: f"2026-01-01T00:00:{next(counter):02d}Z")
+    cfg = Config()
+    cfg.model_planner = "claude-haiku-4-5"   # small tier (floor 60)
+    cfg.run_budget.max_turns = 30            # below the floor → should be raised
+    slug = store.create_feature("Add tagging", "tags on notes")
+    seen_turns = []
+
+    async def planner_script(spec):
+        seen_turns.append(spec.budget.max_turns)
+        yield _init(spec)
+        draft = store.paths.doc_draft_file(slug, "plan")
+        draft.parent.mkdir(parents=True, exist_ok=True)
+        draft.write_text("# Implementation Plan\n\nThe plan body.")
+        yield _assistant(text="wrote the plan draft")
+        yield _result()
+
+    rc = itertools.count(1)
+    pipe = Pipeline(store, cfg, MockBackend({"planner": planner_script}),
+                    run_id_clock=lambda: f"r{next(rc):04d}")
+    await pipe.run_planner(slug)
+    assert seen_turns == [60]                 # 30 floored up to the small-tier floor
+
+
+@pytest.mark.asyncio
 async def test_planner_resumes_on_turn_kill(repo):
     """Phase-A: a planner cut off by the turn budget is resumed (same session) to
     finish, rather than handing back a half-written draft (the planner-kill problem)."""
@@ -259,6 +289,9 @@ async def test_planner_resumes_on_turn_kill(repo):
     store = FileStore(repo, clock=lambda: f"2026-01-01T00:00:{next(counter):02d}Z")
     cfg = Config()
     cfg.run_budget.max_turns = 2          # tiny → first run is cut off
+    # This test targets the extension loop; keep the tiny budget by disabling the
+    # model-aware turn floor (issue #1) so it actually reaches the runner.
+    cfg.turn_tiers = {"small": 1, "large": 1}
     slug = store.create_feature("Add tagging", "tags on notes")
     sessions = []
 

@@ -53,13 +53,15 @@ PHASE_FACTOR = {                                          # multiplier on the ti
     "planner": 1.0, "grill": 1.5, "slicer": 1.5,
     "worker": 1.0,  "e2e": 1.25,  "init": 1.0, "grader": 1.0,
 }
-SMALL_HINTS = ("haiku", "mini", "small")                 # substring match, case-insensitive
+SMALL_HINTS = ("haiku", "mini", "small", "flash", "lite", "nano")  # substring, case-insensitive
+LARGE_HINTS = ("sonnet", "opus", "fable")                # known frontier families
 DEFAULT_PHASE_FACTOR = 1.0                                # unknown phase
 DEFAULT_TIER = "small"                                    # unknown model -> generous
 
 def classify_model(model: str) -> str:
-    """'small' if the id contains a small-model hint, else 'large'. Unknown ids
-    classify 'small' (fail safe — give more turns rather than fewer)."""
+    """A small-model hint wins first, then a known frontier family; an
+    unrecognised id falls back to 'small' (fail safe — give an unknown model MORE
+    turns, not fewer)."""
 
 def effective_turns(model, phase, configured, *, overrides, tiers=None, factors=None) -> int:
     """Resolve the effective max_turns for a run."""

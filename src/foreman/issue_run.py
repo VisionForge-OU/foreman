@@ -15,14 +15,14 @@ import asyncio
 from dataclasses import replace
 from typing import Optional
 
-from . import git_ops, hooks, janitor as janitor_mod, locks, prompts, vendored
+from . import git_ops, hooks, janitor as janitor_mod, locks, prompts, turns, vendored
 from .agents import installer as agents_installer
 from .backend import RunSpec
 from .context import distiller, initializer
 from .context.assembler import AssembledPrompt, estimate_tokens
 from .models import Issue, IssueStatus
 from .retro import metrics as metrics_mod
-from .runner import should_extend, KILLED_USER, KILLED_TURNS
+from .runner import should_extend, run_duration_min, KILLED_USER, KILLED_TURNS
 from .verification import merge_gate
 
 
@@ -93,6 +93,9 @@ class IssueRun:
         # Turn-budget extensions used so far this run (in-memory: a crash tears down
         # the session/worktree, so the count is meaningless after).
         turn_extensions = 0
+        # Cumulative wall-clock + cost of the turn-extension chain (issue #1).
+        chain_wall_min = 0.0
+        chain_cost_usd = 0.0
         prd_sections = self.s._prd_sections(slug, issue)
         feature_state = initializer.read_feature_state(
             self.s.store.paths.feature_state_file(slug)
@@ -106,16 +109,21 @@ class IssueRun:
                 evidence_dir.mkdir(parents=True, exist_ok=True)
                 # WS3.1: every session runs the feature bootstrap first.
                 await self.s._run_init_sh(slug, wt)
+                # Model-aware turn budget (issue #1): scale the issue's budget by the
+                # worker model + the build phase before each run.
+                base_budget = turns.resolve_budget(
+                    self.s.config, self.s.config.model_worker, "worker", issue.budget
+                )
                 # Turn-budget extension: this loop continues the SAME session with a
                 # fresh turn allowance, rather than a fresh-context retry.
                 if turn_extensions > 0:
                     ext_turns = (self.s.config.turn_extension_size
-                                 or self.s.config.run_budget.max_turns)
-                    run_budget = replace(issue.budget, max_turns=ext_turns)
+                                 or base_budget.max_turns)
+                    run_budget = replace(base_budget, max_turns=ext_turns)
                     resume_id = prior_session_id  # force resume regardless of retry_strategy
                 else:
                     ext_turns = 0
-                    run_budget = issue.budget
+                    run_budget = base_budget
                     # WS3.3: fresh session by default; `resume` continues prior context.
                     resume_id = (prior_session_id
                                  if self.s.config.retry_strategy == "resume" else None)
@@ -185,6 +193,8 @@ class IssueRun:
                 wants_more = bool(summary and summary.request_more_turns
                                   and not summary.escalate)
                 hard_turns = result.record.terminal_reason == KILLED_TURNS
+                chain_wall_min += run_duration_min(result.record)
+                chain_cost_usd += result.record.cost_usd
                 if should_extend(
                     result.record.terminal_reason,
                     has_session=bool(prior_session_id),
@@ -192,6 +202,10 @@ class IssueRun:
                     max_extensions=self.s.config.max_turn_extensions,
                     auto_extend=self.s.config.auto_extend_turns,
                     requested_more=wants_more,
+                    chain_wall_min=chain_wall_min,
+                    chain_cost_usd=chain_cost_usd,
+                    wall_ceiling_min=self.s.config.extension_wall_min,
+                    cost_ceiling_usd=self.s.config.extension_cost_usd,
                 ):
                     turn_extensions += 1
                     self.s._log(

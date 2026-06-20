@@ -67,3 +67,76 @@ def test_gate_review_flags_load_from_yaml(tmp_path):
     assert cfg.security_review_enabled is True
     assert cfg.model_security_reviewer == "claude-opus-4-8"
     assert cfg.security_review_budget.max_turns == 12
+
+
+# --------------------------------------------------------------------------- #
+# Model-aware turn budgets (issue #1)
+# --------------------------------------------------------------------------- #
+def test_turn_budget_defaults():
+    cfg = Config()
+    assert cfg.turn_budget_by_model == {}
+    assert cfg.turn_tiers == {}
+    assert cfg.phase_turn_factors == {}
+    # wall + cost are the primary extension limits; the count is a backstop.
+    assert cfg.extension_wall_min == 30
+    assert cfg.extension_cost_usd == 3.0
+    assert cfg.max_turn_extensions == 6
+
+
+def test_turn_budget_fields_load_from_yaml(tmp_path):
+    src = tmp_path / "config.yaml"
+    src.write_text(
+        "turn_budget_by_model:\n  claude-haiku-4-5: 80\n"
+        "turn_tiers:\n  small: 70\n"
+        "phase_turn_factors:\n  grill: 2.0\n"
+        "extension_wall_min: 45\n"
+        "extension_cost_usd: 4.5\n"
+        "max_turn_extensions: 4\n"
+    )
+    cfg = config.load(src)
+    assert cfg.turn_budget_by_model == {"claude-haiku-4-5": 80}
+    assert cfg.turn_tiers == {"small": 70}
+    assert cfg.phase_turn_factors == {"grill": 2.0}
+    assert cfg.extension_wall_min == 45
+    assert cfg.extension_cost_usd == 4.5
+    assert cfg.max_turn_extensions == 4
+
+
+def test_turn_budget_fields_roundtrip():
+    cfg = Config(
+        turn_budget_by_model={"claude-haiku-4-5": 80},
+        turn_tiers={"small": 70, "large": 35},
+        phase_turn_factors={"grill": 2.0},
+        extension_wall_min=45,
+        extension_cost_usd=4.5,
+    )
+    again = config.from_dict(cfg.to_dict())
+    assert again.to_dict() == cfg.to_dict()
+    assert again.turn_budget_by_model == {"claude-haiku-4-5": 80}
+    assert again.turn_tiers == {"small": 70, "large": 35}
+    assert again.phase_turn_factors == {"grill": 2.0}
+
+
+def test_negative_extension_wall_rejected():
+    with pytest.raises(ConfigError):
+        Config(extension_wall_min=-1).validate()
+
+
+def test_non_positive_extension_cost_rejected():
+    with pytest.raises(ConfigError):
+        Config(extension_cost_usd=0).validate()
+
+
+def test_non_positive_tier_floor_rejected():
+    with pytest.raises(ConfigError):
+        Config(turn_tiers={"small": 0}).validate()
+
+
+def test_non_positive_phase_factor_rejected():
+    with pytest.raises(ConfigError):
+        Config(phase_turn_factors={"grill": 0}).validate()
+
+
+def test_non_positive_model_pin_rejected():
+    with pytest.raises(ConfigError):
+        Config(turn_budget_by_model={"claude-haiku-4-5": 0}).validate()
