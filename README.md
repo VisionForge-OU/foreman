@@ -6,11 +6,13 @@
 
 `plan → ADR/PRD → issues → TDD build → e2e`
 
+[![CI](https://github.com/VisionForge-OU/foreman/actions/workflows/ci.yml/badge.svg)](https://github.com/VisionForge-OU/foreman/actions/workflows/ci.yml)
+[![Coverage](https://codecov.io/gh/VisionForge-OU/foreman/branch/main/graph/badge.svg)](https://codecov.io/gh/VisionForge-OU/foreman)
+[![PyPI version](https://img.shields.io/pypi/v/foreman-orchestrator.svg)](https://pypi.org/project/foreman-orchestrator/)
+[![PyPI - Python Version](https://img.shields.io/pypi/pyversions/foreman-orchestrator.svg)](https://pypi.org/project/foreman-orchestrator/)
+[![PyPI - Downloads](https://img.shields.io/pypi/dm/foreman-orchestrator.svg)](https://pypi.org/project/foreman-orchestrator/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
-[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/)
-[![Version](https://img.shields.io/badge/version-0.6.0-blueviolet.svg)](./CHANGELOG.md)
 [![TUI: Textual](https://img.shields.io/badge/TUI-Textual-5a3fd6.svg)](https://textual.textualize.io/)
-[![No database](https://img.shields.io/badge/database-none-lightgrey.svg)](#how-it-works)
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](#contributing)
 
 [Why Foreman?](#why-foreman) · [Demo](#demo) · [Quickstart](#5-minute-quickstart) · [Guide](#guide--driving-the-tui) · [How it works](#how-it-works) · [Roadmap](#roadmap) · [Contributing](#contributing)
