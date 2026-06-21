@@ -23,15 +23,16 @@ classifiers = [
     "Topic :: Software Development :: Build Tools",
 ]
 
+dependencies = [
+    "textual>=0.79",
+    "pyyaml>=6.0",
+]
+
 [project.urls]
 Homepage = "https://github.com/VisionForge-OU/foreman"
 Repository = "https://github.com/VisionForge-OU/foreman"
 Issues = "https://github.com/VisionForge-OU/foreman/issues"
 Changelog = "https://github.com/VisionForge-OU/foreman/blob/main/CHANGELOG.md"
-dependencies = [
-    "textual>=0.79",
-    "pyyaml>=6.0",
-]
 
 [project.optional-dependencies]
 dev = [
