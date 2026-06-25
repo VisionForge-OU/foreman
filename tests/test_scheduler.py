@@ -87,6 +87,25 @@ async def test_report_includes_retries_count(tmp_path):
     assert "Total cost:" in rendered  # cost + escalations already present
 
 
+def test_report_lists_turn_killed_runs():
+    """Issue #1: turn-killed runs get a loud callout in the build report."""
+    from foreman.scheduler import BuildReport
+
+    rep = BuildReport(slug="x", merged=["ISS-001"],
+                      turn_killed=[("ISS-001", 30), ("grill", 90)])
+    out = rep.render()
+    assert "Turn-killed runs" in out
+    assert "ISS-001" in out and "30 turns" in out
+    assert "grill" in out and "90 turns" in out
+
+
+def test_report_no_turn_killed_section_when_clean():
+    from foreman.scheduler import BuildReport
+
+    rep = BuildReport(slug="x", merged=["ISS-001"])
+    assert "Turn-killed" not in rep.render()
+
+
 @pytest.mark.asyncio
 async def test_build_requires_queue_confirmation(tmp_path):
     repo, store, slug = await _prepare_feature(tmp_path)
@@ -590,12 +609,19 @@ async def test_killed_turns_auto_extends_then_completes(tmp_path):
 
     scripts = demo_scripts()
     scripts["tdd:ISS-001"] = script
-    sched = _scheduler(store, _config(), scripts=scripts)
-    await sched.build(slug)
+    cfg = _config()
+    # Targets the extension loop; disable the model-aware turn floor (issue #1) so the
+    # tiny issue budget reaches the runner and trips KILLED_TURNS.
+    cfg.turn_tiers = {"small": 1, "large": 1}
+    sched = _scheduler(store, cfg, scripts=scripts)
+    report = await sched.build(slug)
     iss1 = store.load_issue(slug, "ISS-001")
     assert iss1.status == IssueStatus.MERGED
     assert iss1.attempts == 0
     assert sessions[1] == "demo-tdd"              # resumed after the cut-off
+    # Issue #1: the killed-turns run is surfaced loudly in the report.
+    assert ("ISS-001", 3) in report.turn_killed
+    assert "Turn-killed runs" in report.render()
 
 
 @pytest.mark.asyncio
@@ -619,6 +645,8 @@ async def test_auto_extend_disabled_escalates_on_turn_kill(tmp_path):
     scripts["tdd:ISS-001"] = script
     cfg = _config()
     cfg.auto_extend_turns = False
+    # Keep the tiny budget reaching the runner (disable the issue #1 turn floor).
+    cfg.turn_tiers = {"small": 1, "large": 1}
     sched = _scheduler(store, cfg, scripts=scripts)
     await sched.build(slug)
     iss1 = store.load_issue(slug, "ISS-001")
@@ -685,6 +713,8 @@ async def test_evaluator_resumes_on_turn_kill_then_grades(tmp_path):
     cfg = _config()
     cfg.evaluator_budget = Budget(max_turns=2, max_cost_usd=0, timeout_min=20)  # tiny → cut off
     cfg.turn_extension_size = 30
+    # Keep the tiny evaluator budget reaching the runner (disable the issue #1 floor).
+    cfg.turn_tiers = {"small": 1, "large": 1}
     sessions = []
 
     def eval_script(spec):

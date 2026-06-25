@@ -56,6 +56,34 @@ def test_is_success():
 
 
 # --------------------------------------------------------------------------- #
+# Kill-reason outcomes (flywheel-blindness fix): every terminal run, incl. the
+# turn/cost/timeout/error kills, is a first-class outcome — no more blank/legacy.
+# --------------------------------------------------------------------------- #
+def test_terminal_outcome_maps_kill_reasons_to_themselves():
+    assert M.terminal_outcome("killed_turns") == "killed_turns"
+    assert M.terminal_outcome("killed_cost") == "killed_cost"
+    assert M.terminal_outcome("killed_timeout") == "killed_timeout"
+    assert M.terminal_outcome("killed_stuck") == "killed_stuck"
+    assert M.terminal_outcome("error") == "error"
+    assert M.terminal_outcome("completed") == "completed"
+
+
+def test_terminal_outcome_blank_or_unknown_is_legacy():
+    assert M.terminal_outcome("") == "legacy"
+    assert M.terminal_outcome(None) == "legacy"
+    assert M.terminal_outcome("nonsense-reason") == "legacy"
+
+
+def test_kill_outcomes_are_failures_not_successes():
+    assert "killed_turns" in M.KILL_OUTCOMES  # the dominant dogfood failure
+    for k in M.KILL_OUTCOMES:
+        assert not M.is_success(k)
+    # completed / killed_user are terminal but NOT failure-kills.
+    assert "completed" not in M.KILL_OUTCOMES
+    assert "killed_user" not in M.KILL_OUTCOMES
+
+
+# --------------------------------------------------------------------------- #
 # from_record
 # --------------------------------------------------------------------------- #
 def test_from_record_computes_wall_seconds_from_iso():

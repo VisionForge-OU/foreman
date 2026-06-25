@@ -50,6 +50,10 @@ def should_extend(
     max_extensions: int,
     auto_extend: bool,
     requested_more: bool = False,
+    chain_wall_min: float = 0.0,
+    chain_cost_usd: float = 0.0,
+    wall_ceiling_min: Optional[float] = None,
+    cost_ceiling_usd: Optional[float] = None,
 ) -> bool:
     """Decide 'resume the SAME session with more turns' vs 'give up' (R5/§9, WS3.3).
 
@@ -58,12 +62,40 @@ def should_extend(
 
     A turn cut-off (``KILLED_TURNS``) — or an explicit worker request via
     ``requested_more`` — extends; cost/timeout/stuck/error kills never do. An
-    extension is only possible when auto-extend is enabled, a resumable session
-    exists, and the per-run extension cap has not yet been reached.
+    extension is only possible when auto-extend is enabled and a resumable session
+    exists.
+
+    The primary limit (issue #1) is the cumulative wall-clock + cost of the
+    extension chain: extension stops once ``chain_wall_min`` reaches
+    ``wall_ceiling_min`` or ``chain_cost_usd`` reaches ``cost_ceiling_usd`` (each
+    consulted only when its ceiling is provided). ``max_extensions`` is a runaway
+    backstop on the resume count; ``0`` disables it (wall/cost only).
     """
-    if not auto_extend or not has_session or extensions >= max_extensions:
+    if not auto_extend or not has_session:
+        return False
+    if max_extensions and extensions >= max_extensions:
+        return False
+    if wall_ceiling_min is not None and chain_wall_min >= wall_ceiling_min:
+        return False
+    if cost_ceiling_usd is not None and chain_cost_usd >= cost_ceiling_usd:
         return False
     return requested_more or terminal_reason == KILLED_TURNS
+
+
+def run_duration_min(record: RunRecord) -> float:
+    """Wall-clock minutes between a run's ``started`` and ``finished`` timestamps.
+
+    Returns 0.0 when either timestamp is missing or unparseable — used to
+    accumulate the wall-clock of a turn-extension chain (issue #1).
+    """
+    if not record.started or not record.finished:
+        return 0.0
+    try:
+        start = datetime.fromisoformat(record.started.replace("Z", "+00:00"))
+        end = datetime.fromisoformat(record.finished.replace("Z", "+00:00"))
+    except ValueError:
+        return 0.0
+    return max(0.0, (end - start).total_seconds() / 60.0)
 
 
 EventCallback = Callable[[StreamEvent], None]

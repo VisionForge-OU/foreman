@@ -22,7 +22,7 @@ from typing import Callable, Optional, Protocol
 
 from . import (
     audit as audit_mod, conflicts, git_ops, janitor as janitor_mod,
-    locks, notify as notify_mod, prd, prompts, vendored,
+    locks, notify as notify_mod, prd, prompts, turns, vendored,
 )
 from .agents import evaluator as evaluator_mod
 from .agents import installer as agents_installer
@@ -35,7 +35,7 @@ from .config import Config
 from .issue_run import IssueRun
 from .ledger import CostLedger
 from .models import DocStatus, IssueStatus, Issue
-from .runner import AgentRunner, RunResult, should_extend
+from .runner import AgentRunner, RunResult, run_duration_min, should_extend, KILLED_TURNS
 from .skill_invocation import SkillInvocation
 from .state import FileStore
 from .verify import verify
@@ -74,6 +74,9 @@ class BuildReport:
     e2e: Optional[str] = None
     audit: Optional[str] = None  # WS5.1: satisfied | amendment_drafted(n) | ...
     stopped_reason: str = ""
+    # Issue #1: runs that ended killed_turns — (label, num_turns) — surfaced loudly so
+    # an unattended operator sees the dominant failure without grepping runs/.
+    turn_killed: list[tuple[str, int]] = field(default_factory=list)
 
     def render(self) -> str:
         lines = [f"# Build report — {self.slug}", ""]
@@ -87,6 +90,9 @@ class BuildReport:
         if self.janitor:
             lines.append("- Janitor passes:")
             lines += [f"    - {iid} ({kind}): {outcome}" for iid, kind, outcome in self.janitor]
+        if self.turn_killed:
+            lines.append("- Turn-killed runs (ran out of turns):")
+            lines += [f"    - {label}: {n} turns" for label, n in self.turn_killed]
         lines.append(f"- Total cost: ${self.total_cost_usd:.4f}")
         lines.append(f"- Retries: {self.retries}   ·   Escalations: {len(self.escalated)}")
         if self.e2e:
@@ -318,6 +324,12 @@ class Scheduler:
                 report.blocked.append(i.id)
         report.retries = sum(i.attempts for i in state.issues if not i.is_janitor)
         report.total_cost_usd = self.feature_cost(slug)
+        # Issue #1: surface every run that ran out of turns, loudly, in the report.
+        report.turn_killed = [
+            (str(r.get("label") or r.get("run_id") or "?"), int(r.get("num_turns") or 0))
+            for r in self.store.usage_records(slug)
+            if r.get("terminal_reason") == KILLED_TURNS
+        ]
 
     # ------------------------------------------------------------------ #
     # Single issue lifecycle (with retries)
@@ -335,17 +347,22 @@ class Scheduler:
 
     async def _run_agent_with_extensions(
         self, slug: str, *, label: str, monitor_id: Optional[str], base_budget,
-        build_spec, continuation: str = "",
+        build_spec, continuation: str = "", phase: str = "grader", model: str = "",
     ):
         """Run a non-worker agent (evaluator / e2e / auditor) with bounded turn-budget
-        extensions: on a hard turn cut-off, resume the SAME session with more turns up
-        to ``max_turn_extensions`` before giving up — so a long evaluation/audit/e2e
+        extensions: on a hard turn cut-off, resume the SAME session with more turns
+        until the cumulative wall/cost ceiling bites — so a long evaluation/audit/e2e
         isn't lost to the budget. Persists each run's record + summary and accrues cost.
 
+        ``base_budget`` is first scaled for ``model`` + ``phase`` (issue #1).
         ``build_spec(session_id, budget) -> RunSpec`` builds the spec per attempt.
         Returns ``(final RunResult, final run_id)``.
         """
+        if model:
+            base_budget = turns.resolve_budget(self.config, model, phase, base_budget)
         extensions = 0
+        chain_wall_min = 0.0
+        chain_cost_usd = 0.0
         session_id: Optional[str] = None
         while True:
             run_id = f"{self._run_id_clock()}-{label}"
@@ -372,12 +389,18 @@ class Scheduler:
                 self.store.write_run_summary(slug, run_id, result.final_text)
             self.ledger.add(result.record.cost_usd)
 
+            chain_wall_min += run_duration_min(result.record)
+            chain_cost_usd += result.record.cost_usd
             if should_extend(
                 result.record.terminal_reason,
                 has_session=bool(result.record.session_id),
                 extensions=extensions,
                 max_extensions=self.config.max_turn_extensions,
                 auto_extend=self.config.auto_extend_turns,
+                chain_wall_min=chain_wall_min,
+                chain_cost_usd=chain_cost_usd,
+                wall_ceiling_min=self.config.extension_wall_min,
+                cost_ceiling_usd=self.config.extension_cost_usd,
             ):
                 extensions += 1
                 session_id = result.record.session_id
@@ -410,6 +433,7 @@ class Scheduler:
         result, run_id = await self._run_agent_with_extensions(
             slug, label=f"{issue.id}-eval", monitor_id=f"{issue.id}-eval",
             base_budget=self.config.evaluator_budget, build_spec=_build,
+            phase="grader", model=self.config.model_evaluator,
             continuation=prompts.agent_continuation(
                 "grading this slice and emit the required "
                 "verdict JSON block, then stop. Do not start over."),
@@ -451,6 +475,7 @@ class Scheduler:
             )
         result, run_id = await self._run_agent_with_extensions(
             slug, label=label, monitor_id=label, base_budget=budget, build_spec=_build,
+            phase="grader", model=model,
             continuation=prompts.agent_continuation(task),
         )
         verdict = parse(result.final_text)
@@ -547,7 +572,9 @@ class Scheduler:
                 kind="initializer", slug=slug, repo_root=self.store.paths.root,
                 cwd=self.store.paths.root, prompt=prompt, model=self.config.model_planner,
                 effort=self.config.effort, permission_mode=self.config.permission_mode,
-                budget=self.config.run_budget, label="init",
+                budget=turns.resolve_budget(
+                    self.config, self.config.model_planner, "init", self.config.run_budget
+                ), label="init",
                 extra_dirs=[self.store.paths.feature_dir(slug)],
             )
             if self.monitor:
@@ -720,7 +747,7 @@ class Scheduler:
             )
         await self._run_agent_with_extensions(
             slug, label="e2e", monitor_id="e2e", base_budget=self.config.run_budget,
-            build_spec=_build,
+            build_spec=_build, phase="e2e", model=self.config.model_worker,
             continuation=prompts.agent_continuation("the e2e flow and stop."),
         )
         if e2e_cmd:
@@ -762,6 +789,7 @@ class Scheduler:
         result, run_id = await self._run_agent_with_extensions(
             slug, label="audit", monitor_id="audit",
             base_budget=self.config.evaluator_budget, build_spec=_build,
+            phase="grader", model=self.config.model_auditor,
             continuation=prompts.agent_continuation(
                 "the audit and emit the required audit JSON "
                 "block, then stop. Do not start over."),

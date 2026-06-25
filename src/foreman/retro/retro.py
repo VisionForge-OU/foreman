@@ -59,8 +59,15 @@ def _signature(outcome: str) -> Optional[str]:
     their reason; evaluator bounces and regressions form their own buckets.
     """
     stem = _metrics.base_label(outcome)
-    if stem in _metrics.SUCCESS_LABELS or stem == _metrics.LEGACY:
+    # Non-failure terminals never cluster: successes, legacy/unlabelled, a clean
+    # completion, and an operator-initiated kill (a deliberate human action).
+    if stem in _metrics.SUCCESS_LABELS or stem in (
+        _metrics.LEGACY, _metrics.COMPLETED, _metrics.KILLED_USER
+    ):
         return None
+    # Kill reasons (killed_turns/cost/timeout/stuck, error) are first-class failure
+    # signatures — the dominant dogfood failure (killed_turns) clusters here via the
+    # bare-stem catch-all below, so the flywheel can finally see it.
     if stem == _metrics.EVALUATOR_BOUNCE:
         return "evaluator_bounce"
     if stem in (_metrics.ESCALATED, _metrics.HUMAN_REJECTED):
@@ -132,6 +139,138 @@ class PatchProposal:
             "diff": self.diff,
             "version_bump": self.version_bump,
         }
+
+
+# --------------------------------------------------------------------------- #
+# Deterministic kill-rate proposals — the flywheel must never miss the dominant
+# failure just because it is a turn/cost/timeout kill rather than an escalation.
+# --------------------------------------------------------------------------- #
+# A kill cluster at/above this share of all runs is itself a finding: the flywheel
+# drafts the corresponding fix directly, without waiting on the analysis agent.
+KILL_RATE_PROPOSAL_THRESHOLD = 0.20
+# Below this absolute count a kill is treated as noise, not a recurring pattern.
+KILL_RATE_MIN_COUNT = 2
+
+# One concrete, reviewable proposal per recurring kill reason. The {count}/{total}/
+# {pct} fields are filled from the cluster so the rationale cites the real numbers.
+_KILL_PROPOSAL_TEMPLATES: dict[str, dict[str, str]] = {
+    _metrics.KILLED_TURNS: {
+        "target": "config:turn_budget",
+        "title": "Raise the worker turn budget — recurring turn-budget kills",
+        "rationale": (
+            "{count} of {total} runs ({pct}%) ended killed_turns — the turn budget is "
+            "cutting workers off before they finish, the dominant failure. Raise the "
+            "model-aware turn budget (config.run_budget.max_turns / "
+            "turns.resolve_budget) and/or the turn-extension ceiling "
+            "(config.extension_wall_min, config.max_turn_extensions) so a worker can "
+            "finish or hand off cleanly instead of being cut off mid-slice."
+        ),
+        "diff": (
+            "# config / turns.resolve_budget (the worker turn budget)\n"
+            "- max_turns: <current per-model budget>\n"
+            "+ max_turns: <raise for the worker model, sized to the slice>\n"
+            "  # or raise extension_wall_min / max_turn_extensions so the existing\n"
+            "  # turn-extension chain runs longer before it gives up."
+        ),
+    },
+    _metrics.KILLED_COST: {
+        "target": "config:cost_budget",
+        "title": "Re-tune the worker cost budget — recurring cost kills",
+        "rationale": (
+            "{count} of {total} runs ({pct}%) ended killed_cost. Either raise "
+            "config.run_budget.max_cost_usd for these slices or cut the per-turn cost "
+            "(smaller assembled prompt / cheaper model for the phase)."
+        ),
+        "diff": (
+            "# config.run_budget.max_cost_usd (or the assembled-prompt size)\n"
+            "- max_cost_usd: <current>\n"
+            "+ max_cost_usd: <raise>   # or reduce prompt_tokens / model cost"
+        ),
+    },
+    _metrics.KILLED_TIMEOUT: {
+        "target": "config:timeout",
+        "title": "Raise the wall-clock timeout — recurring timeout kills",
+        "rationale": (
+            "{count} of {total} runs ({pct}%) ended killed_timeout. Raise "
+            "config.run_budget.timeout_min for these slices or split them smaller."
+        ),
+        "diff": (
+            "# config.run_budget.timeout_min\n"
+            "- timeout_min: <current>\n"
+            "+ timeout_min: <raise>   # or slice the work smaller"
+        ),
+    },
+    _metrics.KILLED_STUCK: {
+        "target": "prompt:worker",
+        "title": "Address stuck workers — recurring no-progress kills",
+        "rationale": (
+            "{count} of {total} runs ({pct}%) ended killed_stuck (consecutive turns "
+            "with no file/test progress). Sharpen the worker prompt's next-step "
+            "guidance, or raise config.stuck_turns if it is firing too early."
+        ),
+        "diff": (
+            "# prompt:worker (progress guidance) or config.stuck_turns\n"
+            "- (stuck detection fires after N idle turns)\n"
+            "+ (make the next concrete step explicit, or raise stuck_turns)"
+        ),
+    },
+    _metrics.ERROR: {
+        "target": "prompt:worker",
+        "title": "Investigate agent-run errors — recurring error terminations",
+        "rationale": (
+            "{count} of {total} runs ({pct}%) ended error (the agent run itself "
+            "errored). Inspect the run transcripts for the common failure and harden "
+            "the worker prompt / run environment against it."
+        ),
+        "diff": (
+            "# investigate run transcripts; harden prompt:worker or the run env\n"
+            "- (agent run errors out)\n"
+            "+ (handle the recurring error mode)"
+        ),
+    },
+}
+
+
+def propose_for_clusters(
+    clusters: list[FailureCluster],
+    total_runs: int,
+    *,
+    rate_threshold: float = KILL_RATE_PROPOSAL_THRESHOLD,
+    min_count: int = KILL_RATE_MIN_COUNT,
+) -> list[PatchProposal]:
+    """Deterministic patch proposals for kill clusters above a rate threshold (WS6).
+
+    The analysis agent only ever sees clustered failures; before the flywheel-blindness
+    fix a turn/cost/timeout kill never even formed a cluster, so the dominant failure
+    was silently ignored ("retro found nothing" while half the runs were killed). This
+    makes a high kill rate a first-class proposal trigger: when a kill cluster accounts
+    for at least ``rate_threshold`` of all runs (and at least ``min_count`` runs), the
+    flywheel drafts the corresponding fix directly — no model needed — so it can never
+    miss the turn-budget failure again. Each proposal still goes through the same
+    hash-sealed review gate and bench requirement as any other.
+    """
+    if total_runs <= 0:
+        return []
+    out: list[PatchProposal] = []
+    for c in clusters:
+        template = _KILL_PROPOSAL_TEMPLATES.get(c.pattern)
+        if template is None:
+            continue
+        if c.count < min_count or (c.count / total_runs) < rate_threshold:
+            continue
+        pct = round(100 * c.count / total_runs)
+        out.append(
+            PatchProposal(
+                target=template["target"],
+                title=template["title"],
+                rationale=template["rationale"].format(
+                    count=c.count, total=total_runs, pct=pct
+                ),
+                diff=template["diff"],
+                version_bump=1,
+            )
+        )
+    return out
 
 
 def build_analysis_prompt(clusters: list[FailureCluster], runs_digest: str) -> str:

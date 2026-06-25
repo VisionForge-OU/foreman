@@ -107,8 +107,21 @@ class Config:
     # asks via request_more_turns) Foreman can resume the SAME session with more
     # turns up to ``max_turn_extensions`` times before escalating to a human.
     auto_extend_turns: bool = True
-    max_turn_extensions: int = 2
+    # Backstop only (issue #1): wall-clock + cost are the primary extension limits.
+    max_turn_extensions: int = 6      # 0 ⇒ no count backstop (wall/cost only)
     turn_extension_size: int = 0      # 0 ⇒ reuse run_budget.max_turns per extension
+    # Cumulative ceilings for the turn-extension chain (issue #1). A turn-killed run
+    # keeps resuming the SAME session until it completes or these bite.
+    extension_wall_min: int = 30
+    extension_cost_usd: float = 3.0
+
+    # Model-aware turn budgets (issue #1). ``turn_budget_by_model`` pins an exact
+    # turn count per model (escape hatch; bypasses tiers/phase-scaling/floor).
+    # ``turn_tiers`` / ``phase_turn_factors`` override the built-in tables in
+    # ``turns.py`` (merged over the defaults — only specify what you change).
+    turn_budget_by_model: dict[str, int] = field(default_factory=dict)
+    turn_tiers: dict[str, int] = field(default_factory=dict)
+    phase_turn_factors: dict[str, float] = field(default_factory=dict)
 
     # ---- accessors used by the runner / scheduler ----
     def command(self, name: str) -> Optional[str]:
@@ -143,6 +156,19 @@ class Config:
             errs.append("max_turn_extensions must be >= 0")
         if self.turn_extension_size < 0:
             errs.append("turn_extension_size must be >= 0")
+        if self.extension_wall_min < 0:
+            errs.append("extension_wall_min must be >= 0")
+        if self.extension_cost_usd <= 0:
+            errs.append("extension_cost_usd must be > 0")
+        for model, turns in self.turn_budget_by_model.items():
+            if int(turns) <= 0:
+                errs.append(f"turn_budget_by_model[{model!r}] must be > 0")
+        for tier, floor in self.turn_tiers.items():
+            if int(floor) <= 0:
+                errs.append(f"turn_tiers[{tier!r}] must be > 0")
+        for phase, factor in self.phase_turn_factors.items():
+            if float(factor) <= 0:
+                errs.append(f"phase_turn_factors[{phase!r}] must be > 0")
         if self.limits.daily_cost_usd <= 0:
             errs.append("limits.daily_cost_usd must be > 0")
         if not self.required_skills:
@@ -194,6 +220,11 @@ class Config:
             "auto_extend_turns": self.auto_extend_turns,
             "max_turn_extensions": self.max_turn_extensions,
             "turn_extension_size": self.turn_extension_size,
+            "extension_wall_min": self.extension_wall_min,
+            "extension_cost_usd": self.extension_cost_usd,
+            "turn_budget_by_model": dict(self.turn_budget_by_model),
+            "turn_tiers": dict(self.turn_tiers),
+            "phase_turn_factors": dict(self.phase_turn_factors),
         }
 
 
@@ -242,8 +273,17 @@ def from_dict(d: dict[str, Any]) -> Config:
         e2e_enabled=bool(d.get("e2e_enabled", True)),
         permission_mode=str(d.get("permission_mode", "acceptEdits")),
         auto_extend_turns=bool(d.get("auto_extend_turns", True)),
-        max_turn_extensions=int(d.get("max_turn_extensions", 2)),
+        max_turn_extensions=int(d.get("max_turn_extensions", 6)),
         turn_extension_size=int(d.get("turn_extension_size", 0)),
+        extension_wall_min=int(d.get("extension_wall_min", 30)),
+        extension_cost_usd=float(d.get("extension_cost_usd", 3.0)),
+        turn_budget_by_model={
+            str(k): int(v) for k, v in (d.get("turn_budget_by_model") or {}).items()
+        },
+        turn_tiers={str(k): int(v) for k, v in (d.get("turn_tiers") or {}).items()},
+        phase_turn_factors={
+            str(k): float(v) for k, v in (d.get("phase_turn_factors") or {}).items()
+        },
     )
     if d.get("evaluator_budget"):
         cfg.evaluator_budget = Budget.from_dict(d.get("evaluator_budget"))

@@ -205,8 +205,14 @@ class Controller:
         wl.cost = result.record.cost_usd or wl.cost
         wl.prompt_tokens = result.record.prompt_tokens or wl.prompt_tokens
         tok = f", {wl.prompt_tokens} ctx-tok" if wl.prompt_tokens else ""
-        wl.append(f"■ finished: {status} (${wl.cost:.4f}, {result.record.num_turns} turns{tok})")
-        self._emit(f"  ■ worker {issue_id}: {status} "
+        # Issue #1: make a non-clean terminal reason (esp. killed_turns) LOUD instead
+        # of silently hiding behind the issue status.
+        reason = result.record.terminal_reason
+        flag = f" ⚠ {reason}" if reason and reason != "completed" else ""
+        wl.append(
+            f"■ finished: {status}{flag} (${wl.cost:.4f}, {result.record.num_turns} turns{tok})"
+        )
+        self._emit(f"  ■ worker {issue_id}: {status}{flag} "
                    f"(${wl.cost:.4f}, {result.record.num_turns} turns{tok})")
 
     def escalated(self, issue_id: str, reason: str) -> None:

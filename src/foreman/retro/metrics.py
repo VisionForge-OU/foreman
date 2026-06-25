@@ -27,8 +27,43 @@ ESCALATED = "escalated"                        # rendered as escalated(<reason>)
 HUMAN_REJECTED = "human_rejected"              # rendered as human_rejected(<reason>)
 LEGACY = "legacy"                              # pre-WS6 / unlabelled runs
 
+# Terminal-reason outcomes. Every run ends with a runner terminal_reason; these are
+# the taxonomy labels for the non-delivery terminal states so a killed/erroring run
+# is never left blank/legacy (the flywheel-blindness fix — a turn-budget kill must be
+# a first-class, clusterable outcome, not an invisible one). They match the
+# ``runner`` terminal-reason constants verbatim.
+COMPLETED = "completed"          # ran to completion (a phase agent, or a bounced attempt)
+KILLED_TURNS = "killed_turns"    # cut off at the turn budget (the dominant dogfood failure)
+KILLED_COST = "killed_cost"
+KILLED_TIMEOUT = "killed_timeout"
+KILLED_STUCK = "killed_stuck"
+KILLED_USER = "killed_user"      # operator-initiated kill — terminal, but not a failure
+ERROR = "error"                  # the agent run errored out
+
 # Labels that count as a delivered issue.
 SUCCESS_LABELS = (SUCCESS_FIRST_TRY, SUCCESS_AFTER_RETRY)
+
+# Kill outcomes the flywheel treats as recurring FAILURES worth clustering/proposing
+# on. ``completed`` is terminal-but-fine and ``killed_user`` is a deliberate human
+# action, so neither is a failure-kill.
+KILL_OUTCOMES = (KILLED_TURNS, KILLED_COST, KILLED_TIMEOUT, KILLED_STUCK, ERROR)
+
+# Every recognized terminal-reason outcome (the ones a run may legitimately carry
+# straight from its terminal_reason, before any richer taxonomy stamp).
+_TERMINAL_OUTCOMES = frozenset((COMPLETED,) + KILL_OUTCOMES + (KILLED_USER,))
+
+
+def terminal_outcome(terminal_reason: Any) -> str:
+    """Map a runner ``terminal_reason`` to a non-blank taxonomy outcome label.
+
+    Recognized reasons (``completed`` / the kill reasons / ``error``) map to
+    themselves; a blank or unrecognized reason maps to :data:`LEGACY`. This is the
+    default outcome stamped on any run a richer terminal point never labels
+    (turn-extension intermediates, phase agents, bounced attempts) so no terminal
+    run is ever persisted blank.
+    """
+    reason = str(terminal_reason or "").strip()
+    return reason if reason in _TERMINAL_OUTCOMES else LEGACY
 
 
 def label_success(attempts: int) -> str:

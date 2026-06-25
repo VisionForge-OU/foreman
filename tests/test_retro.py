@@ -50,6 +50,66 @@ def test_cluster_failures_empty():
     assert R.cluster_failures([{"outcome": "success_first_try"}]) == []
 
 
+def _kill_records():
+    return [
+        {"run_id": "k1", "issue_id": "ISS-001", "outcome": "killed_turns"},
+        {"run_id": "k2", "issue_id": "ISS-002", "outcome": "killed_turns"},
+        {"run_id": "k3", "issue_id": "ISS-003", "outcome": "killed_turns"},
+        {"run_id": "k4", "issue_id": "ISS-004", "outcome": "killed_cost"},
+        {"run_id": "c1", "label": "planner", "outcome": "completed"},      # not a failure
+        {"run_id": "u1", "issue_id": "ISS-005", "outcome": "killed_user"}, # deliberate kill
+        {"run_id": "s1", "issue_id": "ISS-006", "outcome": "success_first_try"},
+    ]
+
+
+def test_cluster_failures_surfaces_kill_reasons():
+    """The dominant dogfood failure (killed_turns) must now form a cluster — the
+    flywheel-blindness fix. completed/killed_user/success never cluster."""
+    clusters = R.cluster_failures(_kill_records())
+    patterns = {c.pattern: c.count for c in clusters}
+    assert patterns.get("killed_turns") == 3
+    assert patterns.get("killed_cost") == 1
+    assert "completed" not in patterns
+    assert "killed_user" not in patterns
+    assert "success_first_try" not in patterns
+    # sorted by descending count -> the turn-budget kill leads.
+    assert clusters[0].pattern == "killed_turns"
+
+
+# --------------------------------------------------------------------------- #
+# propose_for_clusters — a high kill rate is a first-class proposal trigger (AC4)
+# --------------------------------------------------------------------------- #
+def test_high_kill_rate_drafts_a_proposal():
+    clusters = R.cluster_failures(_kill_records())   # killed_turns = 3 of 7 runs (43%)
+    proposals = R.propose_for_clusters(clusters, total_runs=7)
+    assert proposals, "a dominant killed_turns cluster must draft a proposal"
+    turn_props = [p for p in proposals if "turn" in p.title.lower()]
+    assert turn_props, "the killed_turns cluster must propose the turn-budget fix"
+    p = turn_props[0]
+    assert "3" in p.rationale          # cites the cluster count
+    assert p.diff.strip()              # concrete + reviewable
+    assert R.PatchProposal is type(p)  # a real proposal that can go through the gate
+
+
+def test_low_kill_rate_drafts_nothing():
+    # One stray kill among many runs is below the rate threshold -> no proposal.
+    clusters = R.cluster_failures(
+        [{"run_id": "k1", "issue_id": "ISS-001", "outcome": "killed_turns"}]
+        + [{"run_id": f"s{i}", "issue_id": f"ISS-{i:03d}",
+            "outcome": "success_first_try"} for i in range(2, 21)]
+    )
+    assert R.propose_for_clusters(clusters, total_runs=20) == []
+
+
+def test_propose_for_clusters_ignores_non_kill_clusters():
+    # Escalations are the analysis agent's job, not the deterministic kill trigger.
+    clusters = R.cluster_failures([
+        {"run_id": "e1", "issue_id": "ISS-001", "outcome": "escalated(budget)"},
+        {"run_id": "e2", "issue_id": "ISS-002", "outcome": "escalated(budget)"},
+    ])
+    assert R.propose_for_clusters(clusters, total_runs=2) == []
+
+
 # --------------------------------------------------------------------------- #
 # build_analysis_prompt
 # --------------------------------------------------------------------------- #

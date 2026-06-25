@@ -39,6 +39,41 @@ async def test_controller_demo_drives_pipeline(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_worker_finished_surfaces_killed_turns(tmp_path):
+    """Issue #1: a turn-killed run is loud in the worker log (no longer silent)."""
+    from foreman.models import RunRecord
+    from foreman.runner import RunResult
+
+    c = Controller(tmp_path, demo=True)
+    rec = RunRecord(
+        run_id="r1-ISS-001", label="ISS-001",
+        started="2026-06-20T10:00:00Z", finished="2026-06-20T10:05:00Z",
+        num_turns=30, cost_usd=0.25, terminal_reason="killed_turns",
+    )
+    c.worker_finished("ISS-001", "tests_failing", RunResult(rec, "", None, None))
+    line = c.workers["ISS-001"].lines[-1]
+    assert "killed_turns" in line
+    assert "⚠" in line
+
+
+@pytest.mark.asyncio
+async def test_worker_finished_clean_run_has_no_warning(tmp_path):
+    from foreman.models import RunRecord
+    from foreman.runner import RunResult
+
+    c = Controller(tmp_path, demo=True)
+    rec = RunRecord(
+        run_id="r1-ISS-001", label="ISS-001",
+        started="2026-06-20T10:00:00Z", finished="2026-06-20T10:05:00Z",
+        num_turns=12, cost_usd=0.10, terminal_reason="completed",
+    )
+    c.worker_finished("ISS-001", "done", RunResult(rec, "", None, None))
+    line = c.workers["ISS-001"].lines[-1]
+    assert "⚠" not in line
+    assert "completed" not in line   # a clean finish stays terse
+
+
+@pytest.mark.asyncio
 async def test_request_changes_on_prd_amendment_creates_fix_issues(tmp_path):
     """H6: requesting changes on a PRD that carries an auto-drafted amendment
     rejects the amendment and spins off fix issues (returns their ids)."""
