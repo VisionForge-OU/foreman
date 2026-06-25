@@ -42,6 +42,10 @@ async def analyze(
     runner = runner or AgentRunner(backend)
     records = _records_for(store, slugs)
     clusters = retro_mod.cluster_failures(records)
+    # Flywheel-blindness fix: a high kill rate (e.g. killed_turns) is a first-class
+    # proposal trigger drafted deterministically, so the dominant failure is never
+    # silently ignored even when the analysis agent proposes nothing.
+    kill_proposals = retro_mod.propose_for_clusters(clusters, len(records))
     per_feature = [metrics_mod.load_feature_metrics(store, s) for s in slugs]
     digest = metrics_mod.trend(per_feature)
     prompt = retro_mod.build_analysis_prompt(clusters, digest)
@@ -54,7 +58,13 @@ async def analyze(
         budget=config.evaluator_budget, label="retro", agent=RETRO_AGENT,
     )
     result = await runner.run(spec, run_id=run_id)
-    proposals = retro_mod.parse_proposals(result.final_text)
+    # Deterministic kill-rate proposals first (never lost), then the agent's — deduped
+    # by (target, title) so an agent that also names a kill fix doesn't double it up.
+    agent_proposals = retro_mod.parse_proposals(result.final_text)
+    seen = {(p.target, p.title) for p in kill_proposals}
+    proposals = kill_proposals + [
+        p for p in agent_proposals if (p.target, p.title) not in seen
+    ]
     return proposals, clusters, per_feature
 
 

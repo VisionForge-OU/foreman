@@ -2,7 +2,7 @@ import itertools
 
 import pytest
 
-from foreman.models import Budget, DocStatus, Issue, IssueStatus, Phase
+from foreman.models import Budget, DocStatus, Issue, IssueStatus, Phase, RunRecord
 from foreman.state import FileStore
 
 
@@ -162,3 +162,35 @@ def test_doc_with_noncanonical_status_loads_tolerantly(store):
     assert plan.status == DocStatus.DRAFTING   # unknown status -> non-approved default
     assert plan.version == 1                    # garbage version -> default
     assert st.phase == Phase.PLAN_REVIEW        # feature still derivable, no crash
+
+
+# --------------------------------------------------------------------------- #
+# Run-record outcome stamping: every persisted terminal run is non-blank (AC1).
+# A run a richer terminal point never labels (turn-extension intermediates, phase
+# agents, bounced attempts) defaults to its terminal_reason — no more blank/legacy.
+# --------------------------------------------------------------------------- #
+def test_write_run_record_stamps_kill_reason_outcome(store):
+    slug = store.create_feature("F", "d")
+    rec = RunRecord(run_id="r1", label="ISS-001", started="t",
+                    terminal_reason="killed_turns")  # outcome left blank
+    store.write_run_record(slug, rec)
+    (data,) = store.usage_records(slug)
+    assert data["outcome"] == "killed_turns"
+
+
+def test_write_run_record_stamps_phase_agent_completion(store):
+    slug = store.create_feature("F", "d")
+    rec = RunRecord(run_id="r1", label="planner", started="t",
+                    terminal_reason="completed")  # planner/grill/slicer were blank
+    store.write_run_record(slug, rec)
+    (data,) = store.usage_records(slug)
+    assert data["outcome"] == "completed"
+
+
+def test_write_run_record_preserves_explicit_outcome(store):
+    slug = store.create_feature("F", "d")
+    rec = RunRecord(run_id="r1", label="ISS-001", started="t",
+                    terminal_reason="completed", outcome="success_first_try")
+    store.write_run_record(slug, rec)
+    (data,) = store.usage_records(slug)
+    assert data["outcome"] == "success_first_try"  # a richer taxonomy stamp wins

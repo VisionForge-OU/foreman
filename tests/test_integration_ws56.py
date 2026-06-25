@@ -219,6 +219,53 @@ async def test_retro_draft_gate_bench_land(tmp_path):
     assert store.paths.skill_changelog_file.exists()
 
 
+# --- Flywheel-blindness fix: a high kill rate yields a drafted proposal (AC5) --- #
+
+@pytest.mark.asyncio
+async def test_retro_proposes_on_killed_runs_even_when_agent_is_silent(tmp_path):
+    """Regression for the central Phase-2 finding: a campaign dominated by
+    killed_turns must yield a NON-EMPTY retro proposal set — even when the analysis
+    agent proposes nothing — instead of the false 'retro found nothing'."""
+    from foreman.retro import driver
+    from foreman.demo_scripts import _init, _result
+    from foreman.stream_parser import parse_event
+
+    store = FileStore(tmp_path / "repo", clock=lambda: "2026-01-01T00:00:00Z")
+    slug = store.create_feature("killed campaign", "soak test")
+    # Seed a fixture of killed_turns runs (the 49% dogfood pattern) + one success.
+    seed = [("001-ISS-001", "killed_turns"), ("002-ISS-002", "killed_turns"),
+            ("003-ISS-003", "killed_turns"), ("004-ISS-004", "killed_turns"),
+            ("005-ISS-005", "success_first_try")]
+    for rid, outcome in seed:
+        store.paths.run_dir(slug, rid).mkdir(parents=True, exist_ok=True)
+        store.paths.run_usage(slug, rid).write_text(json.dumps({
+            "run_id": rid, "label": rid.split("-", 1)[1],
+            "issue_id": rid.split("-", 1)[1], "outcome": outcome,
+            "terminal_reason": outcome,
+        }))
+
+    # A retro analysis agent that finds nothing worth proposing.
+    async def silent_retro(spec):
+        yield _init(spec)
+        yield parse_event({"type": "assistant", "message": {"content": [{
+            "type": "text",
+            "text": '```json\n{"schema":"foreman-retro/v1","proposals":[]}\n```',
+        }], "usage": {"input_tokens": 1}}})
+        yield _result()
+
+    backend = MockBackend({"retro": silent_retro})
+    proposals, clusters, _ = await driver.analyze(store, _config(), backend, slugs=[slug])
+
+    # The dominant killed_turns cluster surfaced...
+    assert any(c.pattern == "killed_turns" for c in clusters)
+    # ...and the flywheel drafted the turn-budget fix despite the silent agent.
+    assert proposals, "killed_turns must not be silently ignored"
+    assert any("turn" in p.title.lower() for p in proposals)
+    # The drafted proposal survives the hash-sealed gate as an in_review doc.
+    names = driver.draft(store, proposals)
+    assert names and driver.load(store, names[0]).status == "in_review"
+
+
 def test_cli_has_retro_and_bench():
     from foreman.cli import build_parser
     p = build_parser()

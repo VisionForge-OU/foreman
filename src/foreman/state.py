@@ -412,8 +412,17 @@ class FileStore:
     def write_run_record(self, slug: str, record: RunRecord) -> None:
         rdir = self.paths.run_dir(slug, record.run_id)
         rdir.mkdir(parents=True, exist_ok=True)
+        data = record.to_dict()
+        # Flywheel-blindness fix: a run a richer terminal point never labels
+        # (turn-extension intermediates, phase agents, bounced attempts) is stamped
+        # with its terminal_reason here, so no terminal run is ever persisted blank.
+        # A specific taxonomy stamp (success/escalated/evaluator_bounce) is written
+        # with a non-blank outcome and so passes through unchanged.
+        if not data.get("outcome"):
+            from .retro import metrics as _metrics  # lazy: avoids an import cycle
+            data["outcome"] = _metrics.terminal_outcome(data.get("terminal_reason"))
         self.paths.run_usage(slug, record.run_id).write_text(
-            json.dumps(record.to_dict(), indent=2)
+            json.dumps(data, indent=2)
         )
 
     def write_run_summary(self, slug: str, run_id: str, summary: str) -> None:
