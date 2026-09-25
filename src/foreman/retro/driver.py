@@ -67,6 +67,7 @@ class StoredProposal:
     proposal: retro_mod.PatchProposal
     status: str           # drafting | in_review | approved
     sealed: bool          # approved AND body unchanged since approval
+    reviewer: str = ""    # human/operator who approved or rejected
 
 
 def draft(store, proposals: list[retro_mod.PatchProposal]) -> list[str]:
@@ -107,7 +108,10 @@ def load(store, name: str) -> Optional[StoredProposal]:
         doc.meta["status"] = "in_review"
         doc.meta.pop("body_sha256", None)
         path.write_text(frontmatter.serialize(doc.meta, doc.body))
-    return StoredProposal(name=name, proposal=p, status=status, sealed=sealed)
+    return StoredProposal(
+        name=name, proposal=p, status=status, sealed=sealed,
+        reviewer=str(doc.get("reviewer", "")),
+    )
 
 
 def approve(store, name: str, reviewer: str = "reviewer") -> StoredProposal:
@@ -184,7 +188,7 @@ def land(store, name: str) -> str:
         new_version = retro_mod.apply_approved(sp.proposal, skill_dir)
         retro_mod.append_changelog(
             store.paths.skill_changelog_file, sp.proposal,
-            approved_by=str(load(store, name).status), version=new_version,
+            approved_by=sp.reviewer or "reviewer", version=new_version,
         )
         return f"landed {name}: {sp.proposal.target} → v{new_version}"
     return f"{name} approved ({sp.proposal.target}); manual application required"
