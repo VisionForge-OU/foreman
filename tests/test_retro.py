@@ -161,6 +161,36 @@ def test_append_changelog_writes_entry(tmp_path):
     assert path.read_text().count("# SKILL_CHANGELOG") == 1
 
 
+def test_land_changelog_records_reviewer_not_status(tmp_path):
+    """Regression: changelog must name the approver, not echo status 'approved'."""
+    from foreman.retro import driver
+    from foreman.state import FileStore
+
+    store = FileStore(tmp_path)
+    skill_dir = store.paths.skills_install_dir / "foreman-tdd"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        frontmatter.serialize({"name": "foreman-tdd", "foreman_skill_version": 1}, "# Skill\n")
+    )
+    p = R.PatchProposal(
+        target="skill:foreman-tdd", title="Cap re-runs",
+        rationale="wasted turns", diff="d", version_bump=1,
+    )
+    name = driver.draft(store, [p])[0]
+    driver.approve(store, name, reviewer="arash")
+    driver.attach_bench(
+        store, name,
+        BenchReport(
+            results=[BenchResult("c", "success_first_try", 0.0, 1, True)],
+            success_rate=1.0, total_cost=0.0, mean_turns=1.0,
+        ),
+    )
+    driver.land(store, name)
+    changelog = store.paths.skill_changelog_file.read_text()
+    assert "(approved by arash)" in changelog
+    assert "(approved by approved)" not in changelog
+
+
 # --------------------------------------------------------------------------- #
 # is_landable — the WS6 hard rule
 # --------------------------------------------------------------------------- #
