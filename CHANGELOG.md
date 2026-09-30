@@ -6,6 +6,9 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- TUI: workers that never reported a finish (e.g. the e2e agent) no longer linger as `running` after a build or resume ends; they are marked `done` (or `failed` if the build raised).
+
 ## [0.6.0] - 2026-05-01
 
 ### Added — WS7: skills-suite expansion (4 worker skills + 2 read-only gate agents)

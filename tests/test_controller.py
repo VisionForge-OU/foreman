@@ -159,3 +159,43 @@ def test_status_line_build_summarizes_running_workers(tmp_path):
     w.status, w.turns, w.cost = "running", 3, 0.02
     sl = c.status_line()
     assert "build" in sl and "ISS-001" in sl and "worker" in sl and "3t" in sl
+
+
+@pytest.mark.asyncio
+async def test_build_leaves_no_running_workers(tmp_path):
+    """A finished build must not leave ghost 'running' workers (e.g. the e2e agent,
+    which starts a worker but never reports a finish)."""
+    c = Controller(tmp_path, demo=True)
+    slug = c.create_feature("Add done", "mark todos done")
+    await c.run_planner(slug)
+    c.approve(slug, "plan")
+    await c.run_grill(slug)
+    c.request_changes(slug, "prd", "no-op please")
+    await c.run_grill(slug)
+    c.approve(slug, "adr")
+    c.approve(slug, "prd")
+    await c.run_slicer(slug)
+    c.confirm_queue(slug)
+
+    # A worker that started but whose finish was never reported.
+    c.worker_started("e2e", "run-e2e")
+
+    await c.build(slug)
+
+    assert c.workers
+    assert [w.issue_id for w in c.workers.values() if w.status == "running"] == []
+    assert c.workers["e2e"].status == "done"
+
+
+@pytest.mark.asyncio
+async def test_failed_build_marks_running_workers_failed(tmp_path):
+    c = Controller(tmp_path, demo=True)
+    c.worker_started("ISS-001", "run-1")
+
+    async def boom():
+        raise RuntimeError("build blew up")
+
+    with pytest.raises(RuntimeError):
+        await c._tracked("build", "build", boom())
+
+    assert c.workers["ISS-001"].status == "failed"

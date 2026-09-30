@@ -209,6 +209,18 @@ class Controller:
         self._emit(f"  ■ worker {issue_id}: {status} "
                    f"(${wl.cost:.4f}, {result.record.num_turns} turns{tok})")
 
+    def finalize_workers(self, status: str) -> None:
+        """Give every worker still marked ``running`` a terminal status.
+
+        Some agents (e.g. the e2e run) start a worker but never report a finish, so
+        when the build/resume activity ends they would linger as ghost "running"
+        workers on the WorkerScreen and in the status line.
+        """
+        for wl in self.workers.values():
+            if wl.status == "running":
+                wl.status = status
+                wl.append(f"■ finished: {status}")
+
     def escalated(self, issue_id: str, reason: str) -> None:
         self.bell_pending = True
         self.global_log.append(f"⚠ {issue_id}: {reason}")
@@ -426,9 +438,13 @@ class Controller:
         self.begin_activity(kind, label)
         try:
             result = await coro
+            if kind in ("build", "resume"):
+                self.finalize_workers("done")
             self.end_activity(True)
             return result
         except Exception as e:  # surface the failure on the status line, then re-raise
+            if kind in ("build", "resume"):
+                self.finalize_workers("failed")
             self.end_activity(False, str(e).splitlines()[0][:80] if str(e) else "")
             raise
 
